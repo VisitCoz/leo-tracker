@@ -123,6 +123,8 @@ async function loadEvents() {
   if (error) { console.error(error); return; }
   events = data || [];
   render();
+  renderSummary();   // data-driven: only redraw on change, not every second
+  renderLog();       // (so the inline delete confirm isn't wiped mid-tap)
   renderStats();
   renderTimeline();
 }
@@ -235,26 +237,29 @@ async function deleteEvent(id) {
 // ============================================================
 //  7. RENDER — runs every second to keep live timers fresh
 // ============================================================
+// Per-second tick: only the live timers. NOT the log/summary — rebuilding the
+// log every second was wiping out the "Delete/Keep" confirm before you could tap.
 function render() {
   renderWake();
   renderLive();
   renderFeedButtons();
   renderSleepButton();
   renderSinceFeed();
-  renderSummary();
-  renderLog();
+  renderFeedAwake();
 }
 
 function renderWake() {
   const card = $("wake-card");
   const sleeping = openSleep();
   if (sleeping) {
-    // While asleep there is no "awake" window — show that instead.
+    // Asleep — show how long he's been sleeping.
     card.className = "card wake-card zone-green";
-    $("wake-time").textContent = "💤";
-    $("wake-status").textContent = "Sleeping";
+    $("wake-eyebrow").textContent = "Asleep for 💤";
+    $("wake-time").textContent = dur(now() - new Date(sleeping.start_at));
+    $("wake-status").textContent = "Tap End sleep when he wakes";
     return;
   }
+  $("wake-eyebrow").textContent = "Awake for";
   const last = lastEndedSleep();
   if (!last) {
     $("wake-time").textContent = "—";
@@ -318,6 +323,15 @@ function renderSinceFeed() {
   if (!f) { $("since-feed").textContent = "—"; return; }
   const mins = Math.floor((now() - new Date(f.end_at || f.start_at)) / 60000);
   $("since-feed").textContent = mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+}
+
+// Clear "how long awake" readout shown on the Feed card.
+function renderFeedAwake() {
+  const el = $("feed-awake");
+  if (!el) return;
+  if (openSleep()) { el.textContent = "💤 Asleep"; return; }
+  const last = lastEndedSleep();
+  el.textContent = last ? "Awake for " + dur(now() - new Date(last.end_at)) : "Awake for —";
 }
 
 function renderSummary() {

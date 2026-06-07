@@ -246,6 +246,7 @@ function render() {
   renderSleepButton();
   renderSinceFeed();
   renderFeedAwake();
+  renderAgo();
 }
 
 function renderWake() {
@@ -323,6 +324,30 @@ function renderSinceFeed() {
   if (!f) { $("since-feed").textContent = "—"; return; }
   const mins = Math.floor((now() - new Date(f.end_at || f.start_at)) / 60000);
   $("since-feed").textContent = mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+}
+
+// Per-action "last done X ago" labels under each feed button + the sleep button.
+// events is newest-first; a matching row with no end_at means it's running now.
+function renderAgo() {
+  const ago = (e) => {
+    if (!e) return "never";
+    if (!e.end_at) return "now";
+    const mins = Math.floor((now() - new Date(e.end_at)) / 60000);
+    return mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+  };
+  $("ago-left").textContent   = ago(events.find((e) => e.type === "breast" && e.subtype === "left"));
+  $("ago-right").textContent  = ago(events.find((e) => e.type === "breast" && e.subtype === "right"));
+  $("ago-bottle").textContent = ago(events.find((e) => e.type === "bottle"));
+
+  const s = events.find((e) => e.type === "sleep");
+  let sleepLabel;
+  if (!s) sleepLabel = "no sleep yet";
+  else if (!s.end_at) sleepLabel = "asleep now";
+  else {
+    const mins = Math.floor((now() - new Date(s.end_at)) / 60000);
+    sleepLabel = mins < 1 ? "woke just now" : `last sleep ${clockMins(mins)} ago`;
+  }
+  $("ago-sleep").textContent = sleepLabel;
 }
 
 // Clear "how long awake" readout shown on the Feed card.

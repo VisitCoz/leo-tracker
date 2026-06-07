@@ -329,11 +329,17 @@ function renderSinceFeed() {
 // Per-action "last done X ago" labels under each feed button + the sleep button.
 // events is newest-first; a matching row with no end_at means it's running now.
 function renderAgo() {
+  // Friendly "27 min ago" / "1 hr 20 min ago" wording.
+  const words = (mins) => {
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return m ? `${h} hr ${m} min ago` : `${h} hr ago`;
+  };
   const ago = (e) => {
     if (!e) return "never";
     if (!e.end_at) return "now";
-    const mins = Math.floor((now() - new Date(e.end_at)) / 60000);
-    return mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+    return words(Math.floor((now() - new Date(e.end_at)) / 60000));
   };
   $("ago-left").textContent   = ago(events.find((e) => e.type === "breast" && e.subtype === "left"));
   $("ago-right").textContent  = ago(events.find((e) => e.type === "breast" && e.subtype === "right"));
@@ -345,7 +351,7 @@ function renderAgo() {
   else if (!s.end_at) sleepLabel = "asleep now";
   else {
     const mins = Math.floor((now() - new Date(s.end_at)) / 60000);
-    sleepLabel = mins < 1 ? "woke just now" : `last sleep ${clockMins(mins)} ago`;
+    sleepLabel = mins < 1 ? "woke just now" : `last sleep ${words(mins)}`;
   }
   $("ago-sleep").textContent = sleepLabel;
 }

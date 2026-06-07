@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>Leo Tracker</title>
+  <meta name="description" content="Calm baby tracker for Leo — feeds, sleep, milestones, AI insights." />
+
+  <!-- PWA: makes it installable to the Home Screen -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#241726" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Leo" />
+
+  <!-- Fonts: Fraunces (serif headings) + Inter (clean body) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ============ LOGIN VIEW ============ -->
+  <main id="auth-view" class="view">
+    <div class="auth-card">
+      <h1 class="brand">Leo</h1>
+      <p class="brand-sub">Family tracker</p>
+      <form id="login-form" autocomplete="on">
+        <label for="email">Email</label>
+        <input id="email" type="email" inputmode="email" autocomplete="username" required />
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required />
+        <button id="login-btn" type="submit" class="btn btn-primary btn-block">Sign in</button>
+      </form>
+      <p id="auth-msg" class="auth-msg" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <!-- ============ APP VIEW ============ -->
+  <main id="app-view" class="view hidden">
+
+    <header class="topbar">
+      <div>
+        <h1 class="topbar-title">Leo</h1>
+        <p id="age-line" class="age-line">—</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="bell-btn" class="icon-btn" title="Enable alerts" aria-label="Enable alerts">🔔</button>
+        <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
+      </div>
+    </header>
+
+    <!-- ============ HOME TAB ============ -->
+    <section id="tab-home" class="tab">
+      <!-- Wake-window timer (headline) -->
+      <section id="wake-card" class="card wake-card zone-green">
+        <p class="card-eyebrow">Awake for</p>
+        <p id="wake-time" class="wake-time">0:00</p>
+        <p id="wake-status" class="wake-status">Window closes at —</p>
+      </section>
+
+      <!-- Live feed / sleep banner -->
+      <section id="live-banner" class="live-banner hidden" aria-live="polite"></section>
+
+      <!-- Today's AI insight -->
+      <section class="card insight-card">
+        <div class="card-head">
+          <h2>✨ Today's insight</h2>
+          <button id="insight-refresh" class="link-btn">↻</button>
+        </div>
+        <p id="insight-text" class="insight-text">Tap ↻ for a gentle, personalized tip.</p>
+      </section>
+
+      <!-- Feeds -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Feed</h2>
+          <span id="since-feed" class="since">—</span>
+        </div>
+        <div class="btn-row">
+          <button id="breast-left" class="btn btn-feed" data-side="left">Breast L</button>
+          <button id="breast-right" class="btn btn-feed" data-side="right">Breast R</button>
+          <button id="bottle-btn" class="btn btn-feed">Bottle</button>
+        </div>
+      </section>
+
+      <!-- Sleep -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Sleep</h2>
+          <span id="sleep-status" class="since">Awake</span>
+        </div>
+        <button id="sleep-btn" class="btn btn-sleep btn-block">Start sleep</button>
+      </section>
+
+      <!-- Milestone -->
+      <section class="card">
+        <button id="milestone-btn" class="btn btn-ghost btn-block">✨ Add milestone</button>
+      </section>
+
+      <!-- Today summary -->
+      <section class="tiles">
+        <div class="tile"><span id="t-feeds" class="tile-num">0</span><span class="tile-label">feeds</span></div>
+        <div class="tile"><span id="t-sleep" class="tile-num">0h</span><span class="tile-label">sleep</span></div>
+        <div class="tile"><span id="t-feedtime" class="tile-num">0m</span><span class="tile-label">feed time</span></div>
+      </section>
+
+      <!-- Today's log -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Today</h2>
+          <button id="export-btn" class="link-btn">Export CSV</button>
+        </div>
+        <ul id="log-list" class="log-list"><li class="log-empty">No entries yet today.</li></ul>
+      </section>
+    </section>
+
+    <!-- ============ STATS TAB ============ -->
+    <section id="tab-stats" class="tab hidden">
+      <div class="seg" id="range-seg">
+        <button class="seg-btn active" data-range="1">Today</button>
+        <button class="seg-btn" data-range="7">7 days</button>
+      </div>
+
+      <section class="card">
+        <h2>Sleep</h2>
+        <div class="stat-row"><span>☀️ Daytime naps</span><span id="s-day" class="stat-val">—</span></div>
+        <div class="stat-row"><span>🌙 Night sleep</span><span id="s-night" class="stat-val">—</span></div>
+        <div class="stat-row"><span>Total sleep</span><span id="s-total" class="stat-val">—</span></div>
+        <div class="stat-row"><span>Avg nap length</span><span id="s-avgnap" class="stat-val">—</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Feeding</h2>
+        <div class="stat-row"><span>🤱 Breast sessions</span><span id="s-breast" class="stat-val">—</span></div>
+        <div class="stat-row"><span>Total breast time</span><span id="s-breasttime" class="stat-val">—</span></div>
+        <div class="stat-row"><span>🍼 Bottles</span><span id="s-bottle" class="stat-val">—</span></div>
+        <div class="stat-row"><span>Total bottle volume</span><span id="s-bottleml" class="stat-val">—</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Sleep — last 7 days</h2>
+        <canvas id="sleep-chart" height="200"></canvas>
+      </section>
+    </section>
+
+    <!-- ============ TIMELINE TAB ============ -->
+    <section id="tab-timeline" class="tab hidden">
+      <p class="tl-legend">
+        <span class="tl-key tl-sleep"></span> Sleep
+        <span class="tl-key tl-breast"></span> Breast
+        <span class="tl-key tl-bottle"></span> Bottle
+        <span class="tl-key tl-ms"></span> Milestone
+      </p>
+      <div id="timeline"></div>
+    </section>
+
+    <!-- ============ ASK TAB ============ -->
+    <section id="tab-ask" class="tab hidden">
+      <div id="chat-list" class="chat-list">
+        <div class="chat-hint">Ask Claude anything about Leo — sleep, naps, feeding, milestones. Answers use his age, your gentle-parenting approach, and his logged data. 💞</div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="Ask about Leo…" autocomplete="off" />
+        <button id="chat-send" type="submit" class="btn btn-primary">Send</button>
+      </form>
+    </section>
+
+    <!-- ============ BOTTOM NAV ============ -->
+    <nav class="bottomnav">
+      <button class="nav-btn active" data-tab="home"><span>🏠</span>Home</button>
+      <button class="nav-btn" data-tab="stats"><span>📊</span>Stats</button>
+      <button class="nav-btn" data-tab="timeline"><span>📈</span>Timeline</button>
+      <button class="nav-btn" data-tab="ask"><span>💬</span>Ask</button>
+    </nav>
+  </main>
+
+  <!-- ============ MODALS ============ -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <!-- Bottle ml -->
+    <div id="bottle-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bottle-title">
+      <h3 id="bottle-title">Bottle amount</h3>
+      <label for="bottle-ml">Milliliters (ml)</label>
+      <input id="bottle-ml" type="number" inputmode="numeric" min="0" step="5" placeholder="e.g. 120" />
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="bottle-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+    <!-- Milestone -->
+    <div id="milestone-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ms-title">
+      <h3 id="ms-title">New milestone</h3>
+      <label for="ms-note">What happened?</label>
+      <input id="ms-note" type="text" placeholder="First smile 🥹" />
+      <label for="ms-photo" class="file-label">Photo (optional)</label>
+      <input id="ms-photo" type="file" accept="image/*" />
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="ms-save" class="btn btn-primary">Save</button>
+      </div>
+      <p id="ms-msg" class="auth-msg"></p>
+    </div>
+  </div>
+
+  <!-- Supabase + Chart.js, loaded from CDNs (no install) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="config.js"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>

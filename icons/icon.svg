@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#241726"/>
+  <!-- crescent moon (sage) -->
+  <path d="M300 110a150 150 0 1 0 0 292 120 120 0 0 1 0-292z" fill="#8fc0a9"/>
+  <!-- little star (warm pink) -->
+  <path d="M356 150l14 30 32 5-23 23 6 32-29-16-29 16 6-32-23-23 32-5z" fill="#e98aa8"/>
+</svg>

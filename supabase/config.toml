@@ -1,0 +1,5 @@
+# Supabase project config. `npx supabase link` ties this to the cloud project.
+project_id = "tgyhsbefshvnxqxgkcqx"
+
+[functions.ask-leo]
+verify_jwt = true

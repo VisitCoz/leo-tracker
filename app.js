@@ -394,21 +394,31 @@ function renderLog() {
     li.className = "log-item";
 
     const span = e.end_at ? new Date(e.end_at) - new Date(e.start_at) : 0;
-    let title = "";
-    if (e.type === "breast")    title = `Breast ${e.subtype === "left" ? "L" : "R"}` + (e.end_at ? ` · ${mmss(span)}` : " · running");
-    else if (e.type === "bottle")    title = `Bottle · ${e.amount_ml || 0} ml`;
-    else if (e.type === "sleep")     title = `Sleep (${e.subtype || "?"})` + (e.end_at ? ` · ${clockMins(span / 60000)}` : " · running");
-    else if (e.type === "milestone") title = e.note || "Milestone";
+    const start = new Date(e.start_at);
+    // meta shows the time range + total: "3:42 PM – 4:16 PM · 33m"
+    let title = "", meta = clockTime(start);
+    if (e.type === "breast") {
+      title = `Breast ${e.subtype === "left" ? "L" : "R"}`;
+      meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${mmss(span)}` : `${clockTime(start)} – running`;
+    } else if (e.type === "bottle") {
+      title = `Bottle · ${e.amount_ml || 0} ml`;
+    } else if (e.type === "sleep") {
+      title = `Sleep (${e.subtype || "?"})`;
+      meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)}` : `${clockTime(start)} – running`;
+    } else if (e.type === "milestone") {
+      title = e.note || "Milestone";
+    }
 
     li.innerHTML = `
       <span class="log-emoji">${EMOJI[e.type] || "•"}</span>
       <div class="log-body">
         <div class="log-title"></div>
-        <div class="log-meta">${clockTime(new Date(e.start_at))}</div>
+        <div class="log-meta"></div>
       </div>
       ${e.photo_url ? `<img class="log-photo" src="${e.photo_url}" alt="" />` : ""}
     `;
-    li.querySelector(".log-title").textContent = title; // textContent = safe against weird notes
+    li.querySelector(".log-title").textContent = title;   // textContent = safe against weird notes
+    li.querySelector(".log-meta").textContent = meta;
 
     // Delete with an inline two-step confirm (no browser confirm()).
     const del = document.createElement("button");

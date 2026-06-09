@@ -121,11 +121,18 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
   transition: background .4s, color .4s;
 }
 
-/* ---------- Age-appropriate targets line ---------- */
-.targets-line { margin: -4px 0 14px; display: flex; flex-direction: column; gap: 2px; text-align: center; }
-.targets-line:empty { display: none; }
-.targets-head { font-size: 12px; color: var(--ink-dim); }
-.targets-actual { font-size: 13px; font-weight: 600; color: var(--ink); }
+/* ---------- Age-appropriate targets (progress) ---------- */
+.targets { margin: -4px 0 14px; display: flex; flex-direction: column; gap: 7px; }
+.targets:empty { display: none; }
+.targets-head { font-size: 12px; color: var(--ink-dim); text-align: center; margin-bottom: 2px; }
+.progress-row { display: grid; grid-template-columns: 52px 1fr auto; align-items: center; gap: 10px; }
+.progress-label { font-size: 13px; font-weight: 600; color: var(--ink); }
+.progress-val { font-size: 12px; color: var(--ink-dim); white-space: nowrap; }
+.bar { height: 8px; border-radius: 999px; background: var(--bg-card-2); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--ink-dim); transition: width .4s ease; }
+.bar-fill.met { background: var(--green); }
+.pips { font-size: 13px; letter-spacing: 3px; color: var(--ink-dim); }
+.pips.met { color: var(--green); }
 .btn-ghost { background: transparent; border: 1px solid #3b2c43; color: var(--ink); }
 
 /* ---------- Tiles ---------- */

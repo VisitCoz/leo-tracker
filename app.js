@@ -449,16 +449,44 @@ function renderSummary() {
 }
 
 // Age-appropriate targets vs. today's actuals (general guideline, not medical advice).
-// Below the low end of the range shows 🟠; within/above shows 🟢.
+// Visual progress: a fill-bar for sleep hours, dot pips for naps + feeds. Each fills toward
+// the daily goal and turns green ("met") once it reaches the low end of the range.
 function renderTargets(sleepH, naps, feeds) {
   const el = $("targets-line");
   if (!el) return;
   const m = ageMonths();
   const t = targetsForAge(m);
-  const dot = (val, lo) => (val >= lo ? "🟢" : "🟠");
+
+  // Sleep: a continuous bar filling toward the low end of the range.
+  const sleepPct = Math.min(100, (sleepH / t.sleepLow) * 100);
+  const sleepRow = barRow("Sleep", sleepPct, `${sleepH.toFixed(1)} / ${t.sleepLow}–${t.sleepHigh}h`, sleepH >= t.sleepLow);
+
+  // Naps + feeds: count-based pips (filled ● up to the high end, empty ○ for the rest).
+  const napRow  = pipRow("Naps", naps, t.napLow, t.napHigh, `${naps} of ${t.napLow}–${t.napHigh}`);
+  const feedRow = pipRow("Feeds", feeds, t.feedLow, t.feedHigh, `${feeds} of ${t.feedLow}–${t.feedHigh}`);
+
   el.innerHTML =
-    `<span class="targets-head">Target (${m} mo): ${t.sleepLow}–${t.sleepHigh}h · ${t.napLow}–${t.napHigh} naps · ${t.feedLow}–${t.feedHigh} feeds</span>` +
-    `<span class="targets-actual">Sleep ${dot(sleepH, t.sleepLow)} ${sleepH.toFixed(1)}h · Naps ${dot(naps, t.napLow)} ${naps} · Feeds ${dot(feeds, t.feedLow)} ${feeds}</span>`;
+    `<div class="targets-head">Target (${m} mo): ${t.sleepLow}–${t.sleepHigh}h · ${t.napLow}–${t.napHigh} naps · ${t.feedLow}–${t.feedHigh} feeds</div>` +
+    sleepRow + napRow + feedRow;
+}
+
+function barRow(label, pct, value, met) {
+  return `<div class="progress-row">` +
+    `<span class="progress-label">${label}</span>` +
+    `<span class="bar"><span class="bar-fill${met ? " met" : ""}" style="width:${pct}%"></span></span>` +
+    `<span class="progress-val">${value}</span>` +
+    `</div>`;
+}
+
+function pipRow(label, count, low, high, value) {
+  const filled = Math.min(count, high);
+  const pips = "●".repeat(filled) + "○".repeat(Math.max(0, high - filled));
+  const met = count >= low;
+  return `<div class="progress-row">` +
+    `<span class="progress-label">${label}</span>` +
+    `<span class="pips${met ? " met" : ""}">${pips}</span>` +
+    `<span class="progress-val">${value}</span>` +
+    `</div>`;
 }
 
 const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨" };

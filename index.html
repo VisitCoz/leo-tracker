@@ -53,6 +53,9 @@
       </div>
     </header>
 
+    <!-- Persistent wake/sleep timer — stays visible on every tab while the app is open -->
+    <div id="topbanner" class="topbanner hidden" aria-live="polite"></div>
+
     <!-- ============ HOME TAB ============ -->
     <section id="tab-home" class="tab">
       <!-- Wake-window timer (headline) -->
@@ -114,6 +117,7 @@
         <div class="tile"><span id="t-sleep" class="tile-num">0h</span><span class="tile-label">sleep</span></div>
         <div class="tile"><span id="t-feedtime" class="tile-num">0m</span><span class="tile-label">feed time</span></div>
       </section>
+      <p id="targets-line" class="targets-line"></p>
 
       <!-- Today's log -->
       <section class="card">

@@ -112,6 +112,20 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .ago-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 6px; }
 .ago-row span { text-align: center; font-size: 12px; color: var(--ink-dim); }
 .ago-sleep { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--ink-dim); }
+
+/* ---------- Persistent wake/sleep banner (all tabs) ---------- */
+.topbanner {
+  position: sticky; top: 0; z-index: 20;
+  text-align: center; font-weight: 600; font-size: 15px;
+  padding: 10px 12px; margin-bottom: 12px; border-radius: 12px;
+  transition: background .4s, color .4s;
+}
+
+/* ---------- Age-appropriate targets line ---------- */
+.targets-line { margin: -4px 0 14px; display: flex; flex-direction: column; gap: 2px; text-align: center; }
+.targets-line:empty { display: none; }
+.targets-head { font-size: 12px; color: var(--ink-dim); }
+.targets-actual { font-size: 13px; font-weight: 600; color: var(--ink); }
 .btn-ghost { background: transparent; border: 1px solid #3b2c43; color: var(--ink); }
 
 /* ---------- Tiles ---------- */

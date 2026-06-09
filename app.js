@@ -41,6 +41,44 @@ function ageString() {
   return `${months} mo ${days} d`;
 }
 
+// ---- Age in whole months (for the target lookup) ------------
+function ageMonths() {
+  const t = now();
+  let m = (t.getFullYear() - BIRTH.getFullYear()) * 12 + (t.getMonth() - BIRTH.getMonth());
+  if (t.getDate() < BIRTH.getDate()) m -= 1;
+  return Math.max(0, m);
+}
+
+// ---- Age-appropriate daily targets (general guideline, NOT medical advice) ----
+// Total sleep includes night + naps. Picked by the first row whose max ≥ age.
+const TARGETS = [
+  { max: 3,   sleepLow: 14, sleepHigh: 17, napLow: 4, napHigh: 5, feedLow: 8, feedHigh: 12 },
+  { max: 5,   sleepLow: 14, sleepHigh: 16, napLow: 3, napHigh: 4, feedLow: 6, feedHigh: 8 },
+  { max: 8,   sleepLow: 13, sleepHigh: 15, napLow: 2, napHigh: 3, feedLow: 5, feedHigh: 6 },
+  { max: 11,  sleepLow: 12, sleepHigh: 15, napLow: 2, napHigh: 2, feedLow: 4, feedHigh: 5 },
+  { max: 17,  sleepLow: 11, sleepHigh: 14, napLow: 1, napHigh: 2, feedLow: 3, feedHigh: 4 },
+  { max: 999, sleepLow: 11, sleepHigh: 14, napLow: 1, napHigh: 1, feedLow: 3, feedHigh: 3 },
+];
+const targetsForAge = (months) => TARGETS.find((t) => months <= t.max) || TARGETS[TARGETS.length - 1];
+
+// Extra context sent to the AI: real local time + age-appropriate targets + today's actuals.
+function aiContext() {
+  const today = events.filter((e) => isToday(e.start_at));
+  const feeds = today.filter((e) => e.type === "breast" || e.type === "bottle").length;
+  let sleepMs = 0, naps = 0;
+  for (const e of today) {
+    if (e.type === "sleep" && e.subtype === "nap" && e.end_at) naps++;
+    if (e.type === "sleep" && e.end_at) sleepMs += new Date(e.end_at) - new Date(e.start_at);
+  }
+  return {
+    age: ageString(),
+    localTime: new Date().toLocaleString(),
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    targets: targetsForAge(ageMonths()),
+    actuals: { sleepH: +(sleepMs / 3600000).toFixed(1), naps, feeds },
+  };
+}
+
 // ---- Tiny helpers -------------------------------------------
 const $ = (id) => document.getElementById(id);
 const now = () => new Date();
@@ -247,6 +285,33 @@ function render() {
   renderSinceFeed();
   renderFeedAwake();
   renderAgo();
+  renderTopBanner();
+}
+
+// Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
+// Reuses the same math + color zones as the Home wake card; ticks every second via render().
+function renderTopBanner() {
+  const el = $("topbanner");
+  if (!el) return;
+  const sleeping = openSleep();
+  if (sleeping) {
+    el.className = "topbanner zone-green";
+    el.textContent = `💤 Asleep ${dur(now() - new Date(sleeping.start_at))}`;
+    el.classList.remove("hidden");
+    return;
+  }
+  const last = lastEndedSleep();
+  if (!last) { el.classList.add("hidden"); return; }
+  const wokeAt = new Date(last.end_at);
+  const mins = (now() - wokeAt) / 60000;
+  let zone = "green";
+  if (mins > ZONE.orange) zone = "red";
+  else if (mins > ZONE.amber) zone = "orange";
+  else if (mins >= ZONE.green) zone = "amber";
+  const closesAt = new Date(wokeAt.getTime() + WAKE_TARGET * 60000);
+  el.className = `topbanner zone-${zone}`;
+  el.textContent = `⏱ Awake ${dur(now() - wokeAt)} · window closes ${clockTime(closesAt)}`;
+  el.classList.remove("hidden");
 }
 
 function renderWake() {
@@ -369,8 +434,9 @@ function renderSummary() {
   const today = events.filter((e) => isToday(e.start_at));
   const feeds = today.filter((e) => e.type === "breast" || e.type === "bottle").length;
 
-  let sleepMs = 0, feedMs = 0;
+  let sleepMs = 0, feedMs = 0, naps = 0;
   for (const e of today) {
+    if (e.type === "sleep" && e.subtype === "nap" && e.end_at) naps++;
     if (!e.end_at) continue;
     const span = new Date(e.end_at) - new Date(e.start_at);
     if (e.type === "sleep") sleepMs += span;
@@ -379,6 +445,20 @@ function renderSummary() {
   $("t-feeds").textContent = feeds;
   $("t-sleep").textContent = (sleepMs / 3600000).toFixed(1) + "h";
   $("t-feedtime").textContent = Math.round(feedMs / 60000) + "m";
+  renderTargets(sleepMs / 3600000, naps, feeds);
+}
+
+// Age-appropriate targets vs. today's actuals (general guideline, not medical advice).
+// Below the low end of the range shows 🟠; within/above shows 🟢.
+function renderTargets(sleepH, naps, feeds) {
+  const el = $("targets-line");
+  if (!el) return;
+  const m = ageMonths();
+  const t = targetsForAge(m);
+  const dot = (val, lo) => (val >= lo ? "🟢" : "🟠");
+  el.innerHTML =
+    `<span class="targets-head">Target (${m} mo): ${t.sleepLow}–${t.sleepHigh}h · ${t.napLow}–${t.napHigh} naps · ${t.feedLow}–${t.feedHigh} feeds</span>` +
+    `<span class="targets-actual">Sleep ${dot(sleepH, t.sleepLow)} ${sleepH.toFixed(1)}h · Naps ${dot(naps, t.napLow)} ${naps} · Feeds ${dot(feeds, t.feedLow)} ${feeds}</span>`;
 }
 
 const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨" };
@@ -444,6 +524,35 @@ async function enableAlarms() {
   const perm = await Notification.requestPermission();
   alarmsOn = perm === "granted";
   $("bell-btn").classList.toggle("armed", alarmsOn);
+  if (alarmsOn) subscribePush();   // also enable background push so alerts fire when the app is closed
+}
+
+// Register a Web Push subscription and store it in Supabase. The wake-watch
+// function reads these to push the 90-min alert even when the app is closed.
+async function subscribePush() {
+  try {
+    const key = window.LEO_CONFIG.VAPID_PUBLIC_KEY;
+    if (!key || key.startsWith("PASTE")) return;                 // push not configured yet
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlB64ToUint8Array(key),
+    });
+    const json = sub.toJSON();
+    await sb.from("push_subscriptions").upsert(
+      { endpoint: json.endpoint, sub: json },
+      { onConflict: "endpoint" },
+    );
+  } catch (err) { console.error("push subscribe failed", err); }
+}
+
+// VAPID public key (base64url) → Uint8Array, as the Push API expects.
+function urlB64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
 function fireAlarm() {
@@ -542,7 +651,7 @@ async function loadInsight(force) {
   card.classList.add("loading");
   box.textContent = "Thinking about Leo…";
   try {
-    const { data, error } = await sb.functions.invoke("ask-leo", { body: { mode: "insight", activity: activitySummary() } });
+    const { data, error } = await sb.functions.invoke("ask-leo", { body: { mode: "insight", activity: activitySummary(), ...aiContext() } });
     card.classList.remove("loading");
     if (error || !data || data.error || !data.reply) {
       box.textContent = "Couldn't reach the assistant yet. (Deploy the ask-leo function + set the API key.)";
@@ -709,7 +818,7 @@ async function sendChat(e) {
   renderChat();
   const history = chat.slice(-20).map((m) => ({ role: m.role, content: m.content }));
   try {
-    const { data, error } = await sb.functions.invoke("ask-leo", { body: { mode: "chat", messages: history, activity: activitySummary() } });
+    const { data, error } = await sb.functions.invoke("ask-leo", { body: { mode: "chat", messages: history, activity: activitySummary(), ...aiContext() } });
     chatBusy = false;
     const reply = (!error && data && !data.error && data.reply)
       ? data.reply

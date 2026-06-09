@@ -66,6 +66,29 @@ link on your phone → Share → **Add to Home Screen**.
 
 ---
 
+## Background push (wake-window alert when the app is closed)
+
+The in-app banner ticks the wake timer while the app is open. To also get a lock-screen alert
+at the 90-minute mark when the app is **closed**, set up Web Push (one time):
+
+1. **Generate a VAPID keypair:** `npx web-push generate-vapid-keys`
+2. **Public key →** `config.js` (`VAPID_PUBLIC_KEY`) — safe to ship.
+3. **Secrets →** Supabase:
+   `npx supabase secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com`
+4. **Run the SQL:** SQL Editor → paste `schema-push.sql` → Run (creates `push_subscriptions` +
+   `wake_alerts`). Then enable `pg_cron`/`pg_net` and run the scheduling block at the bottom of
+   that file (fill in your project ref + key) so `wake-watch` fires every minute.
+5. **Deploy the functions:** `npx supabase functions deploy ask-leo wake-watch --no-verify-jwt`
+   (wake-watch is called by cron, so it skips JWT).
+6. **On each phone:** open the installed app and tap 🔔 to grant alerts (this also stores the
+   push subscription). **iPhone:** Web Push only works for a PWA **installed to the Home Screen
+   via Safari** (iOS 16.4+).
+
+> Note: a notification can't *tick* a live countdown — the OS tray can't run a timer. The live
+> per-second countdown lives in the in-app banner; the push is a single alert at the 90-min mark.
+
+---
+
 ## Reusing this for the next app
 
 Copy the whole folder, then:

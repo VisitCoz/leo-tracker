@@ -18,4 +18,9 @@
 window.LEO_CONFIG = {
   SUPABASE_URL: "https://tgyhsbefshvnxqxgkcqx.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable__lsNB1D20vqIslS_fkDJxQ_PzepHdI0",
+
+  // Web Push public key (base64url) — PUBLIC, safe to ship. Generate a VAPID
+  // keypair (see README "Background push"); paste the PUBLIC key here and set
+  // the PRIVATE key as a Supabase secret for the wake-watch function.
+  VAPID_PUBLIC_KEY: "PASTE_VAPID_PUBLIC_KEY",
 };

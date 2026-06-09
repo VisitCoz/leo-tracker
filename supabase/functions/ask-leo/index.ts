@@ -107,13 +107,36 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   try {
-    const { mode, messages = [], activity = "" } = await req.json();
-    const age = ageString(new Date());
+    const {
+      mode, messages = [], activity = "",
+      age: ageIn = "", localTime = "", tz = "", targets = null, actuals = null,
+    } = await req.json();
+    // Age + "now" come from the CLIENT (the family's real local time/timezone), so the
+    // assistant never reasons from the server's UTC clock. Fall back to server time only
+    // if the client didn't send anything.
+    const age = ageIn || ageString(new Date());
+    const timeLine = localTime
+      ? `Right now it is ${localTime}${tz ? ` (${tz})` : ""}. Reason from THIS local time and date.`
+      : "";
+    const targetLine = targets
+      ? `Age-appropriate daily guideline for Leo (general, not a strict rule): ${targets.sleepLow}-${targets.sleepHigh}h total sleep, ${targets.napLow}-${targets.napHigh} naps, ${targets.feedLow}-${targets.feedHigh} feeds. When relevant, state these and compare to what he actually got today.`
+      : "";
+    const actualLine = actuals
+      ? `Today so far: ${actuals.sleepH}h sleep, ${actuals.naps} naps, ${actuals.feeds} feeds.`
+      : "";
 
-    // Stable profile (cacheable) + a small volatile block with age + today's data.
+    // Stable profile (cacheable) + a small volatile block with time, age, targets + today's data.
     const system = [
       { type: "text", text: LEO_PROFILE, cache_control: { type: "ephemeral" } },
-      { type: "text", text: `Today's context — Leo's current age: ${age}.\nRecent activity:\n${activity || "(no activity logged yet today)"}` },
+      {
+        type: "text",
+        text: [
+          `Today's context — Leo's current age: ${age}.`,
+          timeLine, targetLine, actualLine,
+          `Recent activity:`,
+          activity || "(no activity logged yet today)",
+        ].filter(Boolean).join("\n"),
+      },
     ];
 
     let reply: string;

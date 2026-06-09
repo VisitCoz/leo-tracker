@@ -5,7 +5,7 @@
 //  network (live data must be fresh), so they are never cached.
 // ============================================================
 
-const CACHE = "leo-v2";
+const CACHE = "leo-v3";
 const SHELL = [
   "./",
   "index.html",
@@ -46,5 +46,38 @@ self.addEventListener("fetch", (e) => {
         return res;
       })
       .catch(() => caches.match(e.request))
+  );
+});
+
+// ============================================================
+//  Push — the wake-watch function sends this even when the app
+//  is closed. iOS shows it only for a PWA installed to the Home
+//  Screen (Safari, iOS 16.4+) with notifications granted.
+// ============================================================
+self.addEventListener("push", (e) => {
+  let data = {};
+  try { data = e.data ? e.data.json() : {}; } catch (_) {}
+  const title = data.title || "Leo Tracker";
+  const body = data.body || "Wake window is closing — time to wind down. 😴";
+  e.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: "icons/icon-192.png",
+      badge: "icons/icon-192.png",
+      tag: "wake-window",        // replaces any prior wake alert instead of stacking
+      renotify: true,
+      requireInteraction: true,  // stays until tapped/dismissed
+    })
+  );
+});
+
+// Tapping the notification focuses the open app, or opens it.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ("focus" in c) return c.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow("./");
+    })
   );
 });

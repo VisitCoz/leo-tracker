@@ -2,3 +2,5 @@
 *.log
 node_modules/
 .supabase/
+.vapid_private.txt
+.supabase_token

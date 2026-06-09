@@ -3,3 +3,7 @@ project_id = "tgyhsbefshvnxqxgkcqx"
 
 [functions.ask-leo]
 verify_jwt = true
+
+# Called by the pg_cron schedule, not a logged-in user, so no JWT.
+[functions.wake-watch]
+verify_jwt = false

@@ -22,5 +22,5 @@ window.LEO_CONFIG = {
   // Web Push public key (base64url) — PUBLIC, safe to ship. Generate a VAPID
   // keypair (see README "Background push"); paste the PUBLIC key here and set
   // the PRIVATE key as a Supabase secret for the wake-watch function.
-  VAPID_PUBLIC_KEY: "PASTE_VAPID_PUBLIC_KEY",
+  VAPID_PUBLIC_KEY: "BEHy9Ez-4k4e72ZhErAoThk4KpYFSK5yP5Vi8Nf1VU477ginU8AaTZ0OXRGZnsnVARG8hB2-76X00TxyCAXBgFk",
 };

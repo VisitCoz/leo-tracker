@@ -13,7 +13,16 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import webpush from "npm:web-push@3.6.7";
 
-const WAKE_TARGET_MIN = 90;
+// Periodic snapshot check-ins: first at 60 min, then every 15 min.
+// 90 min is the key "wind down" snapshot. Each threshold fires once per wake window.
+const CHECK_START_MIN = 60;
+const STEP_MIN = 15;
+const WIND_DOWN_MIN = 90;
+
+function fmtMin(min: number): string {
+  const h = Math.floor(min / 60), m = min % 60;
+  return h > 0 ? (m ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+}
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -40,21 +49,31 @@ Deno.serve(async () => {
     // No sleep yet, or he's asleep right now (end_at null) → no wake window.
     if (!last || !last.end_at) return json({ skip: "no open wake window" });
 
-    const awakeMin = (Date.now() - new Date(last.end_at).getTime()) / 60000;
-    if (awakeMin < WAKE_TARGET_MIN) return json({ skip: "within window", awakeMin });
+    const awakeMin = Math.floor((Date.now() - new Date(last.end_at).getTime()) / 60000);
+    if (awakeMin < CHECK_START_MIN) return json({ skip: "within window", awakeMin });
 
-    // Already alerted for this window? (one row per sleep id)
-    const { data: already } = await supabase
-      .from("wake_alerts").select("sleep_id").eq("sleep_id", last.id).maybeSingle();
-    if (already) return json({ skip: "already alerted" });
+    // Highest snapshot threshold reached so far (60, 75, 90, 105, …).
+    const threshold = CHECK_START_MIN + Math.floor((awakeMin - CHECK_START_MIN) / STEP_MIN) * STEP_MIN;
 
-    // Send to every subscribed device.
+    // Which threshold did we last send for this wake window? (0 = none yet)
+    const { data: prev } = await supabase
+      .from("wake_alerts").select("last_min").eq("sleep_id", last.id).maybeSingle();
+    const lastMin = prev?.last_min ?? 0;
+    if (threshold <= lastMin) return json({ skip: "snapshot already sent", threshold, lastMin });
+
+    // The notification shows the elapsed time; tone shifts around the 90-min wind-down mark.
+    const t = fmtMin(threshold);
+    const title = `Leo's been awake ${t}`;
+    const body = threshold < WIND_DOWN_MIN
+      ? "Getting close to wind-down (target ~90 min)."
+      : threshold === WIND_DOWN_MIN
+        ? "Time to wind down for sleep. 😴"
+        : "Past the wake window — he may be getting overtired.";
+    const payload = JSON.stringify({ title, body });
+
+    // Send to every subscribed device. The shared "wake-window" tag means each new
+    // snapshot REPLACES the previous one on the lock screen instead of stacking.
     const { data: subs } = await supabase.from("push_subscriptions").select("endpoint, sub");
-    const payload = JSON.stringify({
-      title: "Leo's wake window is closing",
-      body: `Awake ${Math.round(awakeMin)} min — time to wind down for sleep. 😴`,
-    });
-
     let sent = 0;
     for (const row of subs || []) {
       try {
@@ -68,8 +87,9 @@ Deno.serve(async () => {
       }
     }
 
-    await supabase.from("wake_alerts").insert({ sleep_id: last.id });
-    return json({ sent, awakeMin: Math.round(awakeMin) });
+    // Record the threshold so we don't repeat it this window.
+    await supabase.from("wake_alerts").upsert({ sleep_id: last.id, last_min: threshold }, { onConflict: "sleep_id" });
+    return json({ sent, threshold, awakeMin });
   } catch (err) {
     return json({ error: String(err) }, 500);
   }

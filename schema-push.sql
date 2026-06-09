@@ -22,11 +22,13 @@ create policy "family insert push" on push_subscriptions for insert to authentic
 create policy "family update push" on push_subscriptions for update to authenticated using (true);
 create policy "family delete push" on push_subscriptions for delete to authenticated using (true);
 
--- ---- De-dupe log: one alert per wake window ----------------
--- The wake window is defined by the sleep that just ended; we key
--- by that sleep's id so we send the 90-min alert at most once.
+-- ---- Snapshot progress per wake window ---------------------
+-- The wake window is defined by the sleep that just ended; we key by
+-- that sleep's id. `last_min` is the highest snapshot threshold already
+-- pushed (60, 75, 90, 105, …) so each check-in fires at most once.
 create table if not exists wake_alerts (
   sleep_id  uuid primary key references events(id) on delete cascade,
+  last_min  integer not null default 0,
   sent_at   timestamptz not null default now()
 );
 

@@ -273,6 +273,67 @@ async function deleteEvent(id) {
 }
 
 // ============================================================
+//  6b. EDIT — fix a logged entry (forgotten stop, wrong ml/note/time)
+// ============================================================
+let editId = null;
+
+// ISO (UTC) → value a <input type="datetime-local"> expects (local wall-clock "YYYY-MM-DDTHH:mm").
+function toLocalInput(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function openEditModal(e) {
+  editId = e.id;
+  $("edit-msg").textContent = "";
+  const hasEnd = e.type === "breast" || e.type === "sleep";
+  $("edit-row-end").classList.toggle("hidden", !hasEnd);
+  $("edit-row-ml").classList.toggle("hidden", e.type !== "bottle");
+  $("edit-row-note").classList.toggle("hidden", e.type !== "milestone");
+  $("edit-start").value = toLocalInput(e.start_at);
+  $("edit-end").value   = hasEnd ? toLocalInput(e.end_at) : "";
+  $("edit-ml").value    = e.type === "bottle" ? (e.amount_ml || "") : "";
+  $("edit-note").value  = e.type === "milestone" ? (e.note || "") : "";
+  openModal("edit-modal");
+}
+
+async function saveEdit() {
+  if (!editId) return;
+  const e = events.find((x) => x.id === editId);
+  if (!e) { closeModal(); return; }
+  const msg = $("edit-msg");
+
+  const startVal = $("edit-start").value;
+  if (!startVal) { msg.textContent = "Start time is required."; return; }
+  const fields = { start_at: new Date(startVal).toISOString() };
+
+  if (e.type === "breast" || e.type === "sleep") {
+    const endVal = $("edit-end").value;
+    if (endVal) {
+      if (new Date(endVal) < new Date(startVal)) { msg.textContent = "End can't be before start."; return; }
+      fields.end_at = new Date(endVal).toISOString();
+    } else {
+      fields.end_at = null; // re-open a running entry
+    }
+  }
+  if (e.type === "bottle") {
+    const ml = parseInt($("edit-ml").value, 10);
+    if (!ml || ml <= 0) { msg.textContent = "Enter a milliliter amount."; return; }
+    fields.amount_ml = ml;
+  }
+  if (e.type === "milestone") {
+    fields.note = $("edit-note").value.trim();
+  }
+
+  const { error } = await sb.from("events").update(fields).eq("id", editId);
+  if (error) { msg.textContent = error.message; return; }
+  editId = null;
+  closeModal();
+  await loadEvents();
+}
+
+// ============================================================
 //  7. RENDER — runs every second to keep live timers fresh
 // ============================================================
 // Per-second tick: only the live timers. NOT the log/summary — rebuilding the
@@ -283,9 +344,11 @@ function render() {
   renderFeedButtons();
   renderSleepButton();
   renderSinceFeed();
+  renderNextFeed();
   renderFeedAwake();
   renderAgo();
   renderTopBanner();
+  renderClockNow();
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -389,6 +452,43 @@ function renderSinceFeed() {
   if (!f) { $("since-feed").textContent = "—"; return; }
   const mins = Math.floor((now() - new Date(f.end_at || f.start_at)) / 60000);
   $("since-feed").textContent = mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+}
+
+// Predicted next feed from his last feed + the age-appropriate interval.
+// (Targets give feeds/day; e.g. Leo at 4 mo ≈ 6–8/day → roughly every ~3.4h.)
+function nextFeedAt() {
+  const f = lastFeed();
+  if (!f) return null;
+  const t = targetsForAge(ageMonths());
+  const avgPerDay = (t.feedLow + t.feedHigh) / 2;
+  const intervalMs = ((24 * 60) / avgPerDay) * 60000;
+  return new Date(new Date(f.end_at || f.start_at).getTime() + intervalMs);
+}
+
+// Friendly minutes: "22 min" / "1 hr 5 min".
+function humanMins(m) {
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h} hr ${r} min` : `${h} hr`;
+}
+
+function renderNextFeed() {
+  const el = $("next-feed");
+  if (!el) return;
+  const due = nextFeedAt();
+  if (!due) { el.className = "next-feed"; el.textContent = "Next feed — log a feed to predict"; return; }
+  const diff = Math.round((due - now()) / 60000);
+  let tail;
+  if (diff > 1) { tail = `in ${humanMins(diff)}`; el.className = "next-feed"; }
+  else if (diff >= -5) { tail = "due now"; el.className = "next-feed due"; }
+  else { tail = `overdue ${humanMins(-diff)}`; el.className = "next-feed due"; }
+  el.textContent = `Next feed ~${clockTime(due)} · ${tail}`;
+}
+
+// Live "as of HH:MM" so it's obvious the app is reading the real current time.
+function renderClockNow() {
+  const el = $("clock-now");
+  if (el) el.textContent = `as of ${clockTime(now())}`;
 }
 
 // Per-action "last done X ago" labels under each feed button + the sleep button.
@@ -527,6 +627,12 @@ function renderLog() {
     `;
     li.querySelector(".log-title").textContent = title;   // textContent = safe against weird notes
     li.querySelector(".log-meta").textContent = meta;
+
+    // Edit: open the edit modal pre-filled from this row.
+    const edit = document.createElement("button");
+    edit.className = "edit-btn"; edit.textContent = "✏️";
+    edit.addEventListener("click", () => openEditModal(e));
+    li.appendChild(edit);
 
     // Delete with an inline two-step confirm (no browser confirm()).
     const del = document.createElement("button");
@@ -667,29 +773,43 @@ function activitySummary() {
 //  10d. TODAY'S INSIGHT — Claude via the Edge Function (cached ~2h)
 // ============================================================
 const INSIGHT_KEY = "leo_insight_v1";
+const INSIGHT_TTL = 30 * 60 * 1000; // 30 min — keep the tip aligned with the current part of the day
+
+function setInsightStamp(at) {
+  const el = $("insight-stamp");
+  if (el) el.textContent = at ? `as of ${clockTime(new Date(at))}` : "";
+}
+
 async function loadInsight(force) {
   const box = $("insight-text");
   const card = box.closest(".insight-card");
-  if (!force) {
-    try {
-      const c = JSON.parse(localStorage.getItem(INSIGHT_KEY) || "null");
-      if (c && Date.now() - c.at < 2 * 3600 * 1000) { box.textContent = c.text; return; }
-    } catch (_) {}
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(INSIGHT_KEY) || "null"); } catch (_) {}
+
+  if (!force && cached) {
+    box.textContent = cached.text;            // show the cached tip instantly
+    setInsightStamp(cached.at);
+    if (Date.now() - cached.at < INSIGHT_TTL) return;   // still fresh — done
+    // stale: refresh quietly in the background, keep the old tip on screen
+  } else {
+    card.classList.add("loading");
+    box.textContent = "Thinking about Leo…";
   }
-  card.classList.add("loading");
-  box.textContent = "Thinking about Leo…";
+
   try {
     const { data, error } = await sb.functions.invoke("ask-leo", { body: { mode: "insight", activity: activitySummary(), ...aiContext() } });
     card.classList.remove("loading");
     if (error || !data || data.error || !data.reply) {
-      box.textContent = "Couldn't reach the assistant yet. (Deploy the ask-leo function + set the API key.)";
+      if (!cached) box.textContent = "Couldn't reach the assistant yet. (Deploy the ask-leo function + set the API key.)";
       return;
     }
+    const at = Date.now();
     box.textContent = data.reply;
-    localStorage.setItem(INSIGHT_KEY, JSON.stringify({ text: data.reply, at: Date.now() }));
+    setInsightStamp(at);
+    localStorage.setItem(INSIGHT_KEY, JSON.stringify({ text: data.reply, at }));
   } catch (_) {
     card.classList.remove("loading");
-    box.textContent = "Couldn't reach the assistant yet.";
+    if (!cached) box.textContent = "Couldn't reach the assistant yet.";
   }
 }
 
@@ -875,6 +995,7 @@ $("sleep-btn").addEventListener("click", tapSleep);
 
 $("milestone-btn").addEventListener("click", openMilestoneModal);
 $("ms-save").addEventListener("click", saveMilestone);
+$("edit-save").addEventListener("click", saveEdit);
 
 $("export-btn").addEventListener("click", exportCSV);
 

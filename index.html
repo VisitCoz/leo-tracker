@@ -72,9 +72,13 @@
       <section class="card insight-card">
         <div class="card-head">
           <h2>✨ Today's insight</h2>
-          <button id="insight-refresh" class="link-btn">↻</button>
+          <div class="insight-head-right">
+            <span id="clock-now" class="clock-now">—</span>
+            <button id="insight-refresh" class="link-btn">↻</button>
+          </div>
         </div>
         <p id="insight-text" class="insight-text">Tap ↻ for a gentle, personalized tip.</p>
+        <p id="insight-stamp" class="insight-stamp"></p>
       </section>
 
       <!-- Feeds -->
@@ -83,6 +87,7 @@
           <h2>Feed</h2>
           <span id="since-feed" class="since">—</span>
         </div>
+        <p id="next-feed" class="next-feed">—</p>
         <p id="feed-awake" class="awake-line">Awake —</p>
         <div class="btn-row">
           <button id="breast-left" class="btn btn-feed" data-side="left">Breast L</button>
@@ -213,6 +218,31 @@
         <button id="ms-save" class="btn btn-primary">Save</button>
       </div>
       <p id="ms-msg" class="auth-msg"></p>
+    </div>
+    <!-- Edit an existing entry (fix a forgotten stop, wrong ml, etc.) -->
+    <div id="edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="edit-title">
+      <h3 id="edit-title">Edit entry</h3>
+      <div id="edit-row-start" class="edit-field">
+        <label for="edit-start">Start</label>
+        <input id="edit-start" type="datetime-local" />
+      </div>
+      <div id="edit-row-end" class="edit-field">
+        <label for="edit-end">End <span class="edit-hint">(leave blank if still running)</span></label>
+        <input id="edit-end" type="datetime-local" />
+      </div>
+      <div id="edit-row-ml" class="edit-field">
+        <label for="edit-ml">Milliliters (ml)</label>
+        <input id="edit-ml" type="number" inputmode="numeric" min="0" step="5" />
+      </div>
+      <div id="edit-row-note" class="edit-field">
+        <label for="edit-note">Note</label>
+        <input id="edit-note" type="text" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="edit-save" class="btn btn-primary">Save</button>
+      </div>
+      <p id="edit-msg" class="auth-msg"></p>
     </div>
   </div>
 

@@ -35,6 +35,21 @@ create table if not exists wake_alerts (
 alter table wake_alerts enable row level security;
 -- Only the service-role (used by wake-watch) writes here; no client policies needed.
 
+-- ---- Live-timer notification state (single row) ------------
+-- Tracks the feed/sleep currently shown as a "live" elapsed-time
+-- notification, so wake-watch can refresh it each minute and clear it
+-- once the activity ends. The check constraint keeps it to one row.
+create table if not exists live_notify (
+  id          boolean primary key default true,
+  event_id    uuid,
+  kind        text,
+  updated_at  timestamptz not null default now(),
+  constraint live_notify_singleton check (id = true)
+);
+
+alter table live_notify enable row level security;
+-- Only the service-role (used by wake-watch) writes here; no client policies needed.
+
 -- ============================================================
 --  Schedule wake-watch to run every minute (pg_cron + pg_net).
 --  Replace <PROJECT_REF> and <ANON_OR_SERVICE_KEY> below, then run.

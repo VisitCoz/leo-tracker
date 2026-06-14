@@ -5,7 +5,7 @@
 //  network (live data must be fresh), so they are never cached.
 // ============================================================
 
-const CACHE = "leo-v3";
+const CACHE = "leo-v4";
 const SHELL = [
   "./",
   "index.html",
@@ -57,6 +57,7 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch (_) {}
+
   const title = data.title || "Leo Tracker";
   const body = data.body || "Wake window is closing — time to wind down. 😴";
   e.waitUntil(
@@ -64,9 +65,12 @@ self.addEventListener("push", (e) => {
       body,
       icon: "icons/icon-192.png",
       badge: "icons/icon-192.png",
-      tag: "wake-window",        // replaces any prior wake alert instead of stacking
-      renotify: true,
-      requireInteraction: true,  // stays until tapped/dismissed
+      // Tag groups updates so they replace in place instead of stacking.
+      // Live timer ("live-timer") and wake alerts ("wake-window") stay separate.
+      tag: data.tag || "wake-window",
+      renotify: data.renotify ?? true,
+      requireInteraction: data.requireInteraction ?? true,
+      silent: data.silent ?? false,
     })
   );
 });

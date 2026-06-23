@@ -164,7 +164,7 @@ async function loadEvents() {
   renderSummary();   // data-driven: only redraw on change, not every second
   renderLog();       // (so the inline delete confirm isn't wiped mid-tap)
   renderStats();
-  renderTimeline();
+  if (!$("tab-sleep").classList.contains("hidden")) renderSleep();
 }
 
 // Realtime: when ANY row in `events` is added/changed/removed (by either
@@ -745,8 +745,401 @@ function switchTab(name) {
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   if (name === "stats") renderStats();
-  if (name === "timeline") renderTimeline();
+  if (name === "planner") renderPlanner();
+  if (name === "sleep") renderSleep();
   if (name === "ask") scrollChat();
+}
+
+// ============================================================
+//  10b-PLANNER. CARE PLANNER — age-based day rhythm + event guidance
+//  Predictive (reads `events` for auto-fill; writes nothing).
+// ============================================================
+
+// Age bands (population guides). Keyed by age in weeks (maxW).
+const BANDS = [
+  { maxW:6,    label:"Newborn · 0–6 wk", wwMin:35,  wwMax:60,  wwLast:60,  naps:6, napLen:45, feeds:8, solids:false },
+  { maxW:13,   label:"6–13 wk",          wwMin:60,  wwMax:90,  wwLast:90,  naps:5, napLen:45, feeds:7, solids:false },
+  { maxW:17,   label:"3–4 mo",           wwMin:75,  wwMax:120, wwLast:120, naps:4, napLen:45, feeds:6, solids:false },
+  { maxW:26,   label:"4–6 mo",           wwMin:120, wwMax:165, wwLast:165, naps:3, napLen:60, feeds:6, solids:false },
+  { maxW:39,   label:"6–9 mo",           wwMin:135, wwMax:180, wwLast:180, naps:3, napLen:75, feeds:5, solids:true },
+  { maxW:52,   label:"9–12 mo",          wwMin:165, wwMax:240, wwLast:210, naps:2, napLen:75, feeds:4, solids:true },
+  { maxW:78,   label:"12–18 mo",         wwMin:240, wwMax:300, wwLast:270, naps:1, napLen:120,feeds:3, solids:true },
+  { maxW:9999, label:"18 mo+",           wwMin:300, wwMax:360, wwLast:330, naps:1, napLen:120,feeds:3, solids:true },
+];
+const WHY = [
+  ["Why wake windows?","Adenosine (sleep pressure) builds the whole time Leo is awake. Too little before a nap and he won't settle; too much and he gets a cortisol surge — wired, not sleepy. The window just manages that pressure."],
+  ["Why is the last window the longest?","Maximum sleep pressure right before bed gives the deepest, longest first night stretch and prevents 'false starts' where he pops awake 30–45 min after going down."],
+  ["Why 'drowsy but awake'?","Around 4 months sleep matures into ~45–60 min cycles, and everyone briefly wakes between them. If Leo only falls asleep on the bottle, he needs it recreated at every cycle. Falling asleep on his own at bedtime is what lets him resettle on his own at 2am."],
+  ["Why keep night feeds for now?","Leo is in catch-up growth and partly breastfed. Night-weaning is the LAST step — only once independent sleep is solid and the pediatrician signs off on weight. Onset first, longer stretches second, fewer feeds last."],
+  ["Why morning light + fixed wake time?","Light sets the circadian clock. A consistent wake time plus morning light is the strongest anchor for the whole 24-hour rhythm — and the fix for early-morning waking."],
+];
+
+// Planner helpers (pl-prefixed so they never collide with the tracker's dur/fmt/etc.)
+const plToMin = (s) => { const [h,m]=s.split(":").map(Number); return h*60+m; };
+const plFmt = (min) => { min=((min%1440)+1440)%1440; let h=Math.floor(min/60),m=min%60; const ap=h>=12?"PM":"AM"; h=h%12||12; return `${h}:${pad(m)} ${ap}`; };
+const plDur = (min) => { const h=Math.floor(min/60),m=min%60; return h?`${h}h${m?" "+m+"m":""}`:`${m}m`; };
+const plIcon = (k) => ({wake:"☀️",feed:"🍼",nap:"💤",bed:"🌙"}[k]||"•");
+const plBandFor = (weeks) => BANDS.find((b)=>weeks<b.maxW) || BANDS[BANDS.length-1];
+
+// Age in whole weeks off the app's BIRTH constant.
+function ageWeeks() { return Math.max(0, Math.floor((now() - BIRTH) / 6048e5)); } // 7*864e5 ms/week
+
+function plGenerateDay(wakeMin, band, ww){
+  const items=[]; const push=(t,kind,label,extra={})=>items.push({t,kind,label,...extra});
+  push(wakeMin,"wake","Wake up"); push(wakeMin,"feed","Feed");
+  let cur=wakeMin, used=0;
+  for(let i=0;i<band.naps;i++){
+    const down=cur+ww; if(i>0 && down>17*60) break;
+    push(down,"nap",`Nap ${i+1}`,{len:band.napLen});
+    const up=down+band.napLen; push(up,"wake",`Up from nap ${i+1}`); push(up+5,"feed","Feed");
+    cur=up; used++;
+  }
+  const bed=cur+band.wwLast;
+  push(bed-20,"feed","Bedtime feed"); push(bed,"bed","Bed"); push(bed+210,"feed","Dream feed (optional)");
+  items.sort((a,b)=>a.t-b.t);
+  return {items,bed,naps:used};
+}
+// realLastFeedMin: minutes-of-day of Leo's actual last logged feed (or null) — used for display.
+function plAnalyzeEvent(day, band, evtMin, type, realLastFeedMin){
+  const wakes=day.items.filter(i=>i.kind==="wake"&&i.t<=evtMin);
+  const lastWake=wakes.length?wakes[wakes.length-1].t:day.items[0].t;
+  const awake=evtMin-lastWake;
+  const nextNap=day.items.find(i=>i.kind==="nap"&&i.t>=evtMin);
+  const nextFeed=day.items.find(i=>i.kind==="feed"&&i.t>=evtMin);
+  let windowStatus, statusClass;
+  if(awake<band.wwMin){windowStatus=`Early in a wake window (~${plDur(awake)} awake). Fine — not tired yet.`;statusClass="ok";}
+  else if(awake<=band.wwMax){windowStatus=`Inside his wake window (~${plDur(awake)} awake). Good timing.`;statusClass="ok";}
+  else {windowStatus=`Past his window (~${plDur(awake)} awake — limit ~${plDur(band.wwMax)}). Expect fussiness; plan a nap into it.`;statusClass="warn";}
+  const before=[],during=[],after=[];
+  if(type==="travel"){
+    before.push("Feed right before boarding so he's not hungry during taxi/takeoff.");
+    before.push("Aim to start travel near a nap window so motion does the settling.");
+    before.push(`Pack ${Math.ceil(band.feeds*1.5)} feeds minimum — 1.5× normal, split across separate bags.`);
+    during.push("Feed or offer a pacifier during takeoff AND descent — sucking equalizes ear pressure.");
+    during.push("Recreate sleep cues: white noise (phone), dark (cover carrier/bassinet), sleep sack.");
+    during.push("If it's near bedtime, run the normal wind-down on board — same order, dark, calm.");
+    after.push("Expect a rough first night in the new place — hold the routine, don't invent new props.");
+    after.push("Reset to local morning light fast; it re-anchors his clock within a few days.");
+  } else {
+    before.push(`Feed before you leave (last feed was ${realLastFeedMin!=null?plFmt(realLastFeedMin):"—"}).`);
+    if(statusClass==="warn") before.push("He'll be over his window — plan a motion nap (stroller/carrier) or shift the outing 30–45 min earlier.");
+    during.push(nextNap?`Next nap due ~${plFmt(nextNap.t)}. If the event runs past it, do the nap on the move.`:"No nap due during this window — good window for an outing.");
+    after.push(nextNap?`Get him down for a nap by ~${plFmt(nextNap.t)} (or soon after a motion nap).`:`Resume the rhythm; next feed ~${nextFeed?plFmt(nextFeed.t):"—"}.`);
+    after.push("If a nap got skipped or cut short, move bedtime ~30 min earlier to avoid overtiredness.");
+  }
+  return {windowStatus,statusClass,lastFeedMin:realLastFeedMin,nextFeed,nextNap,before,during,after};
+}
+
+// Planner state — persisted under leoplan_* (separate from any tracker keys).
+const plStore = {
+  get(k,d){ try{ const v=localStorage.getItem("leoplan_"+k); return v===null?d:JSON.parse(v); }catch(e){ return d; } },
+  set(k,v){ try{ localStorage.setItem("leoplan_"+k, JSON.stringify(v)); }catch(e){} }
+};
+const planner = {
+  view:    plStore.get("view","today"),
+  wake:    "06:30",
+  ww:      plStore.get("ww",null),
+  evtType: plStore.get("evtType","outing"),
+  evtTime: plStore.get("evtTime","08:30"),
+  evtName: plStore.get("evtName","Breakfast"),
+  open:    0,
+};
+let plWakeTouched = false; // false → re-seed wake from today's log on each render
+
+function plCurrentBand(){ return plBandFor(ageWeeks()); }
+function plEffectiveWw(){ const b=plCurrentBand(); const def=Math.round((b.wwMin+b.wwMax)/2); return planner.ww==null?def:Math.min(Math.max(planner.ww,b.wwMin),b.wwMax); }
+
+// Morning wake from real data: earliest sleep that ENDED today (prefer night sleep), else 06:30.
+function plDefaultWake(){
+  const ended = events.filter(e=>e.type==="sleep"&&e.end_at&&isToday(e.end_at))
+                      .sort((a,b)=>new Date(a.end_at)-new Date(b.end_at));
+  const first = ended.find(e=>e.subtype==="night") || ended[0];
+  if(first){ const d=new Date(first.end_at); return pad(d.getHours())+":"+pad(d.getMinutes()); }
+  return "06:30";
+}
+// Real last logged feed → minutes-of-day (or null).
+function plRealLastFeedMin(){ const f=lastFeed(); if(!f) return null; const d=new Date(f.start_at); return d.getHours()*60+d.getMinutes(); }
+
+function plRenderAgebar(){
+  const b=plCurrentBand();
+  $("pl-agebar").innerHTML =
+    `<div><span class="pl-num">${ageMonths()}</span><span class="pl-lab">months</span></div>
+     <div><span class="pl-num">${ageWeeks()}</span><span class="pl-lab">weeks</span></div>
+     <div class="pl-band">${b.label}<span>${b.naps} naps · ~${plDur(plEffectiveWw())} windows · ${b.solids?"+ solids":"milk only"}</span></div>`;
+}
+
+function buildPlToday(){
+  if(!plWakeTouched) planner.wake = plDefaultWake();
+  const b=plCurrentBand(), ww=plEffectiveWw();
+  return `<section>
+    <div class="pl-controls">
+      <label>Morning wake <input type="time" id="pl-wake" value="${planner.wake}"></label>
+      <label>Wake window: <b id="pl-wwval">${plDur(ww)}</b>
+        <input type="range" id="pl-ww" min="${b.wwMin}" max="${b.wwMax}" value="${ww}">
+        <span class="pl-hint">Auto-set from today's log · slide to adjust</span></label>
+    </div>
+    <div id="pl-today-out"></div></section>`;
+}
+function renderPlTodayOut(){
+  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
+  const late = day.bed>20*60+30;
+  $("pl-today-out").innerHTML =
+    `<div class="pl-summary">Predicted bedtime <b>${plFmt(day.bed)}</b> · ${day.naps} naps${late?' <em>— late; try an earlier wake or shorter windows.</em>':''}</div>
+     <ul class="pl-timeline">${day.items.map(it=>`<li class="pl-k-${it.kind}"><span class="pl-tt">${plFmt(it.t)}</span><span class="pl-ic">${plIcon(it.kind)}</span><span class="pl-ll">${it.label}${it.len?` <em>· ${plDur(it.len)}</em>`:''}</span></li>`).join("")}</ul>`;
+}
+function buildPlEvent(){
+  return `<section>
+    <p class="pl-lead">Enter a fixed event — the planner shows what to do <b>before, during, and after</b> to keep Leo rested and fed.</p>
+    <div class="pl-controls">
+      <label>What <input type="text" id="pl-evtName" value="${planner.evtName}" placeholder="Breakfast / Flight"></label>
+      <label>Time <input type="time" id="pl-evtTime" value="${planner.evtTime}"></label>
+      <label>Type <select id="pl-evtType">
+        <option value="outing"${planner.evtType==="outing"?" selected":""}>Outing / meal</option>
+        <option value="appt"${planner.evtType==="appt"?" selected":""}>Appointment</option>
+        <option value="travel"${planner.evtType==="travel"?" selected":""}>Travel / flight</option>
+      </select></label>
+    </div>
+    <div id="pl-event-out"></div></section>`;
+}
+function renderPlEventOut(){
+  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
+  const e=plAnalyzeEvent(day,b,plToMin(planner.evtTime),planner.evtType,plRealLastFeedMin());
+  $("pl-event-out").innerHTML =
+    `<div class="pl-status ${e.statusClass}"><b>${planner.evtName||"Event"} at ${plFmt(plToMin(planner.evtTime))}</b><br>${e.windowStatus}</div>
+     <div class="pl-bda">
+       <div><h3>Before</h3><ul>${e.before.map(x=>`<li>${x}</li>`).join("")}</ul></div>
+       <div><h3>During</h3><ul>${e.during.map(x=>`<li>${x}</li>`).join("")}</ul></div>
+       <div><h3>After</h3><ul>${e.after.map(x=>`<li>${x}</li>`).join("")}</ul></div>
+     </div>
+     <div class="pl-mini"><span>Last feed before: <b>${e.lastFeedMin!=null?plFmt(e.lastFeedMin):"—"}</b></span><span>Next nap: <b>${e.nextNap?plFmt(e.nextNap.t):"none due"}</b></span><span>Next feed: <b>${e.nextFeed?plFmt(e.nextFeed.t):"—"}</b></span></div>`;
+}
+function buildPlWhy(){
+  return `<section>${WHY.map((w,i)=>`<div class="acc${planner.open===i?' open':''}" data-i="${i}"><div class="accq">${w[0]}<span>${planner.open===i?'–':'+'}</span></div>${planner.open===i?`<div class="acca">${w[1]}</div>`:''}</div>`).join("")}
+    <p class="pl-disc">Population guides, not medical advice. Defer to Dr. León Magaña for Leo's specifics.</p></section>`;
+}
+
+function renderPlanner(){
+  plRenderAgebar();
+  document.querySelectorAll("#pl-subtabs button").forEach(btn=>btn.classList.toggle("on",btn.dataset.v===planner.view));
+  const c=$("pl-content");
+  if(planner.view==="today"){
+    c.innerHTML=buildPlToday(); renderPlTodayOut();
+    $("pl-wake").addEventListener("input",e=>{planner.wake=e.target.value;plWakeTouched=true;renderPlTodayOut();});
+    $("pl-ww").addEventListener("input",e=>{planner.ww=+e.target.value;plStore.set("ww",planner.ww);$("pl-wwval").textContent=plDur(planner.ww);renderPlTodayOut();});
+  } else if(planner.view==="event"){
+    c.innerHTML=buildPlEvent(); renderPlEventOut();
+    $("pl-evtName").addEventListener("input",e=>{planner.evtName=e.target.value;plStore.set("evtName",planner.evtName);renderPlEventOut();});
+    $("pl-evtTime").addEventListener("input",e=>{planner.evtTime=e.target.value;plStore.set("evtTime",planner.evtTime);renderPlEventOut();});
+    $("pl-evtType").addEventListener("change",e=>{planner.evtType=e.target.value;plStore.set("evtType",planner.evtType);renderPlEventOut();});
+  } else {
+    c.innerHTML=buildPlWhy();
+    c.querySelectorAll(".acc").forEach(a=>a.addEventListener("click",()=>{const i=+a.dataset.i;planner.open=planner.open===i?-1:i;renderPlanner();}));
+  }
+}
+
+// ============================================================
+//  10b-SLEEP. SLEEP PLAN — age-aware "when to start" + how-to
+//  Reads `events` for the real-data progress block; writes nothing.
+//  Research basis verified 2026-06 (see citations block at bottom):
+//  Gradisar 2016 Pediatrics · Price 2012 Pediatrics · AASM 2006 ·
+//  AAP Safe Sleep 2022 · AAP night-feeds guidance.
+// ============================================================
+
+// Readiness bands, keyed to age in weeks (reuses ageWeeks()/ageMonths()).
+//  <17 wk (~<4 mo) → not yet · 17–25 wk (4–6 mo) → foundation · 26 wk+ (6 mo+) → full
+function sleepBand(weeks){
+  if (weeks < 17) return { key: "notyet", tone: "amber" };
+  if (weeks < 26) return { key: "foundation", tone: "green" };
+  return { key: "full", tone: "green" };
+}
+
+function sleepBannerHTML(){
+  const w = ageWeeks(), mo = ageMonths(), b = sleepBand(w);
+  const moWord = mo === 1 ? "month" : "months";
+  const wksToSix = Math.max(0, 26 - w);
+  if (b.key === "notyet") return `<div class="sl-banner amber">
+    <div class="sl-banner-eyebrow">🔴 Not yet — and that's exactly right</div>
+    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b>. Under about 4 months a baby's sleep isn't organized enough to learn to self-settle, and night feeds are still needed. For now: a calm, consistent wind-down — no training. This turns green around 4 months.</p></div>`;
+  if (b.key === "foundation") return `<div class="sl-banner green">
+    <div class="sl-banner-eyebrow">🟢 Now's the time to start the foundation</div>
+    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — in the 4–6 month window where gentle sleep-shaping is appropriate. Start <b>Phase 1</b> below now: same bedtime and wake time, morning light, a short routine, and laying him down drowsy but awake. <b>Keep all his feeds.</b> The more active step (<b>Phase 2 — bedtime fading</b>) has its strongest research support from about 6 months — <b>~${wksToSix} ${wksToSix === 1 ? "week" : "weeks"} away</b> for Leo, so treat it as <em>coming soon</em>, not <em>now</em>.</p></div>`;
+  return `<div class="sl-banner green">
+    <div class="sl-banner-eyebrow">🟢 Green light — the full plan fits Leo now</div>
+    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — past 6 months, where the research is strongest. Both phases below are well-supported. Use Phase 2 (bedtime fading) if he needs more help. Keep feeds unless Dr. León Magaña has guided otherwise.</p></div>`;
+}
+
+// Real-data progress: last 7 days from the tracker's `events`.
+function sleepProgress(){
+  const weekAgo = now().getTime() - 7 * 86400000;
+  const after = (iso) => new Date(iso).getTime() >= weekAgo;
+  const nightSleeps = events.filter(e => e.type === "sleep" && e.subtype === "night" && e.end_at && after(e.start_at));
+  // Longest single night block.
+  let longest = 0;
+  nightSleeps.forEach(e => { const d = new Date(e.end_at) - new Date(e.start_at); if (d > longest) longest = d; });
+  // Typical bedtime: the EARLIEST evening (17:00–23:59) night-sleep onset per date, averaged.
+  // (Excludes post-midnight resettles so the clock-average isn't dragged into the afternoon.)
+  const firstByDate = {};
+  nightSleeps.forEach(e => {
+    const d = new Date(e.start_at);
+    if (d.getHours() < 17) return;
+    const key = d.toDateString(), mins = d.getHours() * 60 + d.getMinutes();
+    if (firstByDate[key] === undefined || mins < firstByDate[key]) firstByDate[key] = mins;
+  });
+  const bedtimes = Object.values(firstByDate);
+  const bedAvg = bedtimes.length ? Math.round(bedtimes.reduce((a, b) => a + b, 0) / bedtimes.length) : null;
+  // Distinct nights = calendar dates with any night sleep.
+  const nights = new Set(nightSleeps.map(e => new Date(e.start_at).toDateString())).size;
+  // Independent onsets: a sleep NOT preceded by a feed ending within 20 min.
+  const sleeps = events.filter(e => e.type === "sleep" && after(e.start_at));
+  const feeds = events.filter(e => e.type === "breast" || e.type === "bottle");
+  let indep = 0;
+  sleeps.forEach(s => {
+    const ss = new Date(s.start_at).getTime();
+    const fedBefore = feeds.some(f => { const fe = new Date(f.end_at || f.start_at).getTime(); return fe <= ss && ss - fe <= 20 * 60000; });
+    if (!fedBefore) indep++;
+  });
+  const pct = sleeps.length ? Math.round((indep / sleeps.length) * 100) : null;
+  return { nights, longest, bedAvg, pct, total: sleeps.length };
+}
+function sleepProgressHTML(){
+  const p = sleepProgress();
+  if (p.total < 3) return `<div class="sl-progress"><p class="sl-prog-empty">Log a few nights of sleep and feeds and Leo's real numbers show up here.</p></div>`;
+  const longest = p.longest ? plDur(Math.round(p.longest / 60000)) : "—";
+  const bed = p.bedAvg != null ? plFmt(p.bedAvg) : "—";
+  const pct = p.pct != null ? p.pct + "%" : "—";
+  return `<div class="sl-progress">
+    <div class="sl-prog-tiles">
+      <div><span class="sl-prog-num">${longest}</span><span class="sl-prog-lab">longest night stretch</span></div>
+      <div><span class="sl-prog-num">${bed}</span><span class="sl-prog-lab">typical bedtime</span></div>
+      <div><span class="sl-prog-num">${pct}</span><span class="sl-prog-lab">onsets without a feed</span></div>
+    </div>
+    <p class="sl-prog-note">From Leo's last 7 days (${p.nights} ${p.nights === 1 ? "night" : "nights"} logged). The numbers to watch: <b>longest stretch trending up</b>, and <b>more onsets without a feed</b>.</p>
+  </div>`;
+}
+
+// Static plan content (research-softened per the M0 ledger).
+const SLEEP_GATE = `<div class="sl-gate"><b>One thing stays separate from all of this:</b> whether and when to drop night feeds is a <b>weight-and-doctor decision, not a sleep decision.</b> Leo is partly breastfed and was in catch-up growth, so his night feeds may be nutritionally important — <b>keep them until Dr. León Magaña reviews his weight and says otherwise.</b> You can teach Leo to fall asleep on his own <em>while keeping every feed.</em></div>`;
+
+const SLEEP_REASSURE = `<div class="sl-reassure">
+  <h2>First, what this is not</h2>
+  <ul>
+    <li>We are <b>not</b> leaving Leo to cry alone.</li>
+    <li>We are <b>not</b> taking away his night feeds — he keeps them for now.</li>
+    <li>We are <b>not</b> rushing. We move only as fast as he's ready.</li>
+    <li>We are <b>not</b> following anyone's "rules" — we adjust to Leo.</li>
+  </ul>
+  <p class="sl-closer">A study that followed babies to age 6 found no harm to attachment, stress, or behaviour — and no lasting downside either. Gentle and effective aren't opposites.</p>
+</div>`;
+
+const SLEEP_BODY = `
+  <h2>The one idea behind all of it</h2>
+  <p class="sl-lead">Everything below comes from a single fact about how Leo sleeps now.</p>
+  <div class="sl-card">
+    <p>Around 4 months, a baby's sleep gradually matures into <span class="sl-big">cycles</span> of about 50–60 minutes, and Leo briefly surfaces between them. <b>Everyone does this, adults too</b> — we just roll over and drift back without remembering. (The popular "four-month sleep regression" is really this normal change, not a true regression.)</p>
+    <p>The whole goal is helping Leo do the same — <b>drift back on his own.</b> If the only way he knows how to fall asleep is on the bottle or in our arms, then every time he surfaces at night he needs us to recreate that to get back down. Teaching him to fall asleep <em>by himself at bedtime</em> is what lets him resettle by himself at 2am.</p>
+  </div>
+
+  <h2>The order we follow</h2>
+  <p class="sl-lead">This sequence matters — we don't skip ahead.</p>
+  <div class="sl-card sl-order">
+    <div class="sl-ostep"><div class="sl-onum">1</div><div><div class="sl-ot">Falling asleep on his own</div><div class="sl-od">At bedtime first. This is the whole foundation.</div></div></div>
+    <div class="sl-ostep"><div class="sl-onum">2</div><div><div class="sl-ot">Longer stretches at night</div><div class="sl-od">These come naturally once step 1 clicks.</div></div></div>
+    <div class="sl-ostep last"><div class="sl-onum">3</div><div><div class="sl-ot">Fewer night feeds — much later</div><div class="sl-od">Only when his weight &amp; the doctor say so. Not now.</div></div></div>
+  </div>
+
+  <h2>Our bedtime, in order</h2>
+  <p class="sl-lead">Same steps, same order, every night. The key change: feed comes <em>early</em>, not last.</p>
+  <div class="sl-flow">
+    <span class="sl-chip">Feed (awake)</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Sleep sack</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Dark room</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Book or song</span><span class="sl-arrow">→</span>
+    <span class="sl-chip key">Into crib drowsy but awake</span>
+  </div>
+  <div class="sl-card">
+    <p>The most important step is the last one: <b>laying Leo down while he's still awake</b> — sleepy, but eyes open. That's the moment he practices falling asleep himself. Many babies don't settle easily at first, so it's the <em>goal we aim for</em>, not a switch that flips overnight. Mike leads bedtime; the dream feed (~10:15) stays, in the dark.</p>
+  </div>
+
+  <h2>How we start</h2>
+  <div class="sl-phase">
+    <div class="sl-ph-head"><span>Phase 1 · Settle the basics</span><span class="sl-when">Nights 1–4</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li>Same bedtime (~6:30–7:00) and same morning wake time every day.</li>
+        <li>Morning light soon after he's up — light is the body's main clock-setter and helps anchor his rhythm.</li>
+        <li>Run the bedtime steps above, every night.</li>
+        <li>Lay him down drowsy but awake. That's it — no "training" yet.</li>
+      </ul>
+      <p class="sl-note"><em>Many babies improve from this alone. We give it 4 nights before doing anything more.</em></p>
+    </div>
+  </div>
+  <div class="sl-phase">
+    <div class="sl-ph-head"><span>Phase 2 · Gentle help (only if needed)</span><span class="sl-when">Nights 5+ · ~6 mo</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li>If he's still fighting it, start bedtime at the time he <em>actually</em> falls asleep now — so going down feels easy and he succeeds.</li>
+        <li>Then move bedtime ~15 minutes earlier every few nights, back toward our target.</li>
+        <li>Always drowsy but awake. No leaving him alone to cry.</li>
+      </ul>
+      <p class="sl-note"><em>This "bedtime fading" is an established technique; its strongest evidence is from about 6 months — so it pairs with Leo reaching that mark. Naps are harder and come later; we don't judge progress by naps in the first week.</em></p>
+    </div>
+  </div>
+
+  <div class="sl-together">
+    <div class="sl-together-k">The thing that makes or breaks it</div>
+    <p>We both have to do it <b>the same way.</b> If one of us lays Leo down awake and the other feeds him fully to sleep, he gets mixed signals and it takes much longer — and feels harder on him. So before each night: <b>same method, same steps, both of us.</b> When one of us is unsure, we check with each other, not switch on the fly.</p>
+  </div>
+
+  <h2>Easy slip-ups to avoid</h2>
+  <div class="sl-miss"><div class="sl-mt">Keeping him up too long</div><div class="sl-mw">An overtired baby tends to sleep more fragmented and wake more overnight. Watch his cues, don't stretch the window.</div></div>
+  <div class="sl-miss"><div class="sl-mt">Feeding all the way to sleep</div><div class="sl-mw">It's the comfiest shortcut, but it's the main reason for night wakings now. Feed early, settle separately.</div></div>
+  <div class="sl-miss"><div class="sl-mt">Rushing in at the first sound</div><div class="sl-mw">A little noise between cycles is normal. Pause, listen — give him a chance to resettle before going in.</div></div>
+  <div class="sl-miss"><div class="sl-mt">Stopping after a few nights</div><div class="sl-mw">If we start and then give up mid-way, it can teach him that fussing longer works. We pick a plan and hold it.</div></div>
+
+  <h2>How we'll know</h2>
+  <p class="sl-lead">Leo's real numbers from the tracker — plus what to look and watch for.</p>`;
+
+const SLEEP_FLAGS = `
+  <div class="sl-flags">
+    <div class="sl-flag green">
+      <div class="sl-ft">It's working when…</div>
+      <ul>
+        <li>His first stretch gets longer week by week</li>
+        <li>He falls asleep within ~20 min without the bottle</li>
+        <li>He settles back at some wake-ups on his own</li>
+      </ul>
+    </div>
+    <div class="sl-flag red">
+      <div class="sl-ft">Check with Dr. León Magaña if…</div>
+      <ul>
+        <li>His weight gain stalls or drops</li>
+        <li>Snoring, gasping, or pauses in his breathing</li>
+        <li>He seems genuinely hungry at night, not just habit</li>
+        <li>Anything feels off to either of us — trust that</li>
+      </ul>
+    </div>
+  </div>`;
+
+const SLEEP_CITE = `
+  <details class="sl-cite">
+    <summary>The research behind this</summary>
+    <ul>
+      <li><b>Gentle methods don't harm babies</b> — a small randomized trial (Gradisar et al., 2016, <i>Pediatrics</i>; 43 infants 6–16 mo) found graduated extinction and bedtime fading improved sleep with no rise in stress hormones and no effect on attachment at 12 months.</li>
+      <li><b>No lasting downside</b> — a 5-year follow-up (Price et al., 2012, <i>Pediatrics</i>) found no harm to behaviour, stress, or parent-child attachment at age 6 (and no lasting benefit either).</li>
+      <li><b>Sleep cycles</b> mature gradually across ~3–6 months into ~50–60 min cycles, with brief arousals between them (pediatric sleep reviews).</li>
+      <li><b>Bedtime fading</b> is an established behavioural technique (AASM practice parameters, Morgenthaler et al., 2006).</li>
+      <li><b>Night feeds</b> are commonly still needed by breastfed babies under ~6 months; dropping them is a weight/medical decision (AAP / HealthyChildren.org).</li>
+      <li><b>Safe sleep</b> (AAP, 2022): back to sleep, room-sharing without bed-sharing for at least the first 6 months, firm flat surface, no soft bedding.</li>
+    </ul>
+    <p class="sl-cite-note">Population research — not medical advice for Leo. Dr. León Magaña has the final word.</p>
+  </details>`;
+
+const SLEEP_FOOTER = `<div class="sl-footer"><p class="sl-heart">For Emma &amp; Leo 🤍</p><p>A plan, not a rulebook. Leo leads — we adjust with him, together.</p></div>`;
+
+function renderSleep(){
+  $("sleep-content").innerHTML =
+    sleepBannerHTML() + SLEEP_REASSURE + SLEEP_GATE + SLEEP_BODY +
+    sleepProgressHTML() + SLEEP_FLAGS + SLEEP_CITE + SLEEP_FOOTER;
 }
 
 // ============================================================
@@ -889,39 +1282,6 @@ function renderChart() {
 }
 
 // ============================================================
-//  10f. TIMELINE — last 3 days, 24h band per day
-// ============================================================
-function renderTimeline() {
-  const box = $("timeline");
-  if (!box) return;
-  const t = now();
-  box.innerHTML = "";
-  for (let i = 0; i < 3; i++) {
-    const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() - i);
-    const dayStart = d.getTime(), dayEnd = dayStart + 86400000;
-    const wrap = document.createElement("div");
-    wrap.className = "tl-day";
-    const label = i === 0 ? "Today" : i === 1 ? "Yesterday" : d.toLocaleDateString([], { weekday: "long" });
-    wrap.innerHTML = `<div class="tl-date">${label} · ${d.toLocaleDateString([], { month: "short", day: "numeric" })}</div><div class="tl-track"></div><div class="tl-hours"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>`;
-    const track = wrap.querySelector(".tl-track");
-    for (const e of events) {
-      const s = new Date(e.start_at).getTime();
-      if (s < dayStart || s >= dayEnd) continue;
-      const end = e.end_at ? new Date(e.end_at).getTime() : s + 5 * 60000;
-      const left = ((s - dayStart) / 86400000) * 100;
-      const width = Math.max(((Math.min(end, dayEnd) - s) / 86400000) * 100, 0.6);
-      const blk = document.createElement("div");
-      blk.className = "tl-block b-" + e.type;
-      blk.style.left = left + "%";
-      blk.style.width = width + "%";
-      blk.title = `${e.type} ${clockTime(new Date(e.start_at))}`;
-      track.appendChild(blk);
-    }
-    box.appendChild(wrap);
-  }
-}
-
-// ============================================================
 //  10g. CHAT — talk to Claude about Leo
 // ============================================================
 async function loadMessages() {
@@ -1001,6 +1361,9 @@ $("export-btn").addEventListener("click", exportCSV);
 
 // v2: tabs, stats range, insight refresh, chat
 document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+$("pl-subtabs").addEventListener("click", (e) => {
+  if (e.target.dataset.v) { planner.view = e.target.dataset.v; plStore.set("view", planner.view); renderPlanner(); }
+});
 document.querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click", () => {
   statsRange = Number(b.dataset.range);
   document.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));

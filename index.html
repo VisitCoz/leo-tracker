@@ -163,17 +163,6 @@
       </section>
     </section>
 
-    <!-- ============ TIMELINE TAB ============ -->
-    <section id="tab-timeline" class="tab hidden">
-      <p class="tl-legend">
-        <span class="tl-key tl-sleep"></span> Sleep
-        <span class="tl-key tl-breast"></span> Breast
-        <span class="tl-key tl-bottle"></span> Bottle
-        <span class="tl-key tl-ms"></span> Milestone
-      </p>
-      <div id="timeline"></div>
-    </section>
-
     <!-- ============ ASK TAB ============ -->
     <section id="tab-ask" class="tab hidden">
       <div id="chat-list" class="chat-list">
@@ -185,11 +174,28 @@
       </form>
     </section>
 
+    <!-- ============ PLANNER TAB ============ -->
+    <section id="tab-planner" class="tab hidden">
+      <div class="pl-agebar" id="pl-agebar"></div>
+      <nav class="pl-subtabs" id="pl-subtabs">
+        <button data-v="today" class="on">Today's rhythm</button>
+        <button data-v="event">Plan an event</button>
+        <button data-v="why">Why we do this</button>
+      </nav>
+      <div id="pl-content"></div>
+    </section>
+
+    <!-- ============ SLEEP TAB ============ -->
+    <section id="tab-sleep" class="tab hidden">
+      <div id="sleep-content"></div>
+    </section>
+
     <!-- ============ BOTTOM NAV ============ -->
     <nav class="bottomnav">
       <button class="nav-btn active" data-tab="home"><span>🏠</span>Home</button>
       <button class="nav-btn" data-tab="stats"><span>📊</span>Stats</button>
-      <button class="nav-btn" data-tab="timeline"><span>📈</span>Timeline</button>
+      <button class="nav-btn" data-tab="planner"><span>🗓️</span>Plan</button>
+      <button class="nav-btn" data-tab="sleep"><span>🌙</span>Sleep</button>
       <button class="nav-btn" data-tab="ask"><span>💬</span>Ask</button>
     </nav>
   </main>

@@ -254,3 +254,190 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .chat-form { display: flex; gap: 8px; padding: 8px 0 4px; }
 .chat-form input { flex: 1; }
 .chat-form .btn { min-height: 48px; padding: 0 18px; }
+
+/* ============================================================
+   Planner tab — age-based day rhythm + event guidance.
+   Same dark palette as the rest of the app (reuses the :root vars).
+   ============================================================ */
+#tab-planner section { margin: 0; }
+
+/* Age band header strip */
+.pl-agebar { display: flex; gap: 8px; margin-bottom: 14px; }
+.pl-agebar > div {
+  flex: 1; background: var(--bg-card); border: 1px solid #36283d; border-radius: 14px;
+  padding: 10px 8px; text-align: center;
+}
+.pl-num { display: block; font-family: "Fraunces", serif; font-size: 24px; font-weight: 600; color: var(--sage); line-height: 1; }
+.pl-lab { font-size: 11px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: .06em; }
+.pl-band {
+  display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px;
+  flex: 1.4; font-weight: 700; font-size: 13px; background: var(--sage-deep); color: #fff;
+  border-color: var(--sage-deep);
+}
+.pl-band span { font-weight: 500; font-size: 11px; opacity: .92; }
+
+/* Sub-tab pills (distinct from the bottom nav) */
+.pl-subtabs {
+  display: flex; gap: 6px; margin-bottom: 16px; background: var(--bg-card);
+  padding: 5px; border-radius: 12px; border: 1px solid #36283d;
+}
+.pl-subtabs button {
+  flex: 1; font: inherit; font-weight: 700; font-size: 13px; padding: 9px 4px;
+  border: none; border-radius: 9px; background: transparent; color: var(--ink-dim); cursor: pointer;
+}
+.pl-subtabs button.on { background: var(--pink); color: #2a1320; }
+
+/* Controls (wake time, slider, event inputs) */
+.pl-controls { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.pl-controls label {
+  display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 140px;
+  font-size: 13px; font-weight: 700; color: var(--ink-dim);
+}
+.pl-controls input, .pl-controls select {
+  font: inherit; font-weight: 600; color: var(--ink);
+  padding: 9px 10px; border: 1px solid #3b2c43; border-radius: 10px; background: var(--bg-card-2);
+}
+.pl-controls input[type=range] { padding: 0; accent-color: var(--pink); }
+.pl-hint { font-weight: 500; font-size: 11px; color: var(--ink-dim); }
+
+.pl-summary { background: var(--bg-card); border: 1px solid #36283d; border-radius: 12px; padding: 12px 14px; font-size: 15px; margin-bottom: 12px; }
+.pl-summary em { color: var(--orange); font-style: normal; font-weight: 700; }
+.pl-lead { color: var(--ink-dim); font-size: 15px; margin: 0 0 12px; }
+
+/* Day timeline */
+.pl-timeline { list-style: none; margin: 0; padding: 0; }
+.pl-timeline li {
+  display: flex; align-items: center; gap: 12px; padding: 11px 12px;
+  border-radius: 11px; margin: 6px 0; background: var(--bg-card); border: 1px solid #36283d;
+}
+.pl-timeline li.pl-k-bed { background: linear-gradient(160deg, #4d3320, #3c281a); border-color: #5a3a22; }
+.pl-timeline li.pl-k-nap { background: linear-gradient(160deg, #25402f, #1f3327); border-color: #2e5440; }
+.pl-tt { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--sage); flex: 0 0 78px; font-size: 14px; }
+.pl-ic { font-size: 17px; }
+.pl-ll { font-weight: 600; }
+.pl-ll em { font-style: normal; color: var(--ink-dim); font-weight: 500; font-size: 13px; }
+
+/* Event status banner */
+.pl-status { border-radius: 12px; padding: 13px 15px; margin: 4px 0 14px; font-size: 14.5px; border: 1px solid; }
+.pl-status.ok   { background: linear-gradient(160deg, #25402f, #1f3327); border-color: #2e5440; color: #d8f2e3; }
+.pl-status.warn { background: linear-gradient(160deg, #4d3320, #3c281a); border-color: #5a3a22; color: #f6d8bf; }
+
+/* Before / during / after grid */
+.pl-bda { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.pl-bda > div { background: var(--bg-card); border: 1px solid #36283d; border-radius: 14px; padding: 14px 16px; }
+.pl-bda h3 { font-family: "Fraunces", serif; font-size: 17px; margin-bottom: 8px; color: var(--pink); }
+.pl-bda ul { padding-left: 18px; margin: 0; }
+.pl-bda li { margin: 5px 0; font-size: 14.5px; }
+@media (min-width: 480px) { .pl-bda { grid-template-columns: repeat(3, 1fr); } }
+
+.pl-mini { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; font-size: 13px; color: var(--ink-dim); }
+.pl-mini b { color: var(--ink); }
+
+/* Why accordion */
+.acc { background: var(--bg-card); border: 1px solid #36283d; border-radius: 12px; margin: 8px 0; padding: 14px 16px; cursor: pointer; }
+.acc.open { border-color: var(--sage-deep); }
+.accq { display: flex; justify-content: space-between; font-weight: 700; font-family: "Fraunces", serif; font-size: 16px; }
+.accq span { color: var(--sage); font-size: 20px; line-height: 1; }
+.acca { margin-top: 10px; font-size: 14.5px; color: var(--ink-dim); }
+.pl-disc { font-size: 12px; color: var(--ink-dim); text-align: center; margin-top: 14px; font-style: italic; }
+
+/* ============================================================
+   Sleep tab — age-aware "when to start" + how-to plan.
+   Dark palette (reuses :root vars). Leads with the age banner.
+   ============================================================ */
+#tab-sleep h2 { font-family: "Fraunces", serif; font-size: 22px; color: var(--ink); margin: 30px 0 4px; }
+#tab-sleep .sl-lead { color: var(--ink-dim); font-size: 15px; margin-bottom: 12px; }
+
+/* Age "when to start" banner (the lead) */
+.sl-banner { border-radius: 18px; padding: 20px; margin-bottom: 14px; border: 1px solid; }
+.sl-banner.green { background: linear-gradient(160deg, #25402f, #1f3327); border-color: #2e5440; }
+.sl-banner.amber { background: linear-gradient(160deg, #4a3c1f, #3a2f1a); border-color: #5c4a26; }
+.sl-banner-eyebrow { font-family: "Fraunces", serif; font-weight: 600; font-size: 19px; margin-bottom: 8px; color: var(--ink); }
+.sl-banner p { font-size: 15px; line-height: 1.55; color: var(--ink); }
+.sl-banner b { font-weight: 700; }
+
+/* Reassurance hero */
+.sl-reassure { background: var(--sage-deep); color: #fff; border-radius: 18px; padding: 22px 20px; margin: 8px 0; }
+.sl-reassure h2 { color: #fff; font-family: "Fraunces", serif; font-size: 20px; margin: 0 0 10px; }
+.sl-reassure ul { list-style: none; margin: 0; padding: 0; }
+.sl-reassure li { padding: 6px 0 6px 26px; position: relative; font-size: 15px; }
+.sl-reassure li::before { content: "✓"; position: absolute; left: 0; top: 6px; font-weight: 700; color: #cfe0bf; }
+.sl-reassure b { color: #fff; }
+.sl-closer { margin-top: 12px; font-size: 14px; opacity: .94; font-style: italic; font-family: "Fraunces", serif; }
+
+/* Doctor / feeds gate */
+.sl-gate { background: var(--bg-card-2); border: 1px solid #3b2c43; border-left: 4px solid var(--pink); border-radius: 12px; padding: 16px 18px; margin: 14px 0; font-size: 14.5px; line-height: 1.55; }
+.sl-gate b { color: var(--ink); }
+
+.sl-card { background: var(--bg-card); border: 1px solid #36283d; border-radius: 16px; padding: 18px 20px; margin: 12px 0; }
+.sl-card p + p { margin-top: 10px; }
+.sl-card .sl-big { font-family: "Fraunces", serif; font-style: italic; color: var(--sage); font-weight: 600; }
+
+/* Order steps */
+.sl-order { padding: 6px 20px; }
+.sl-ostep { display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; border-bottom: 1px solid #36283d; }
+.sl-ostep.last { border-bottom: none; }
+.sl-onum { flex: 0 0 36px; height: 36px; border-radius: 50%; background: var(--sage-deep); color: #fff; font-family: "Fraunces", serif; font-weight: 600; font-size: 16px; display: flex; align-items: center; justify-content: center; }
+.sl-ostep.last .sl-onum { background: var(--pink-deep); }
+.sl-ot { font-weight: 700; font-size: 15.5px; }
+.sl-od { font-size: 13.5px; color: var(--ink-dim); margin-top: 2px; }
+
+/* Bedtime flow chips */
+.sl-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; }
+.sl-chip { background: var(--bg-card); border: 1px solid #3b2c43; border-radius: 30px; padding: 8px 14px; font-size: 14px; font-weight: 600; }
+.sl-chip.key { background: var(--pink); color: #2a1320; border-color: var(--pink); }
+.sl-arrow { color: var(--ink-dim); font-weight: 700; }
+
+/* Phases */
+.sl-phase { background: var(--bg-card); border: 1px solid #36283d; border-radius: 16px; margin: 12px 0; overflow: hidden; }
+.sl-ph-head { background: var(--bg-card-2); padding: 13px 18px; font-weight: 700; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sl-when { font-size: 12px; color: var(--ink-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.sl-ph-body { padding: 16px 18px; }
+.sl-ph-body ul { list-style: none; margin: 0; padding: 0; }
+.sl-ph-body li { padding: 5px 0 5px 22px; position: relative; font-size: 15px; }
+.sl-ph-body li::before { content: ""; position: absolute; left: 2px; top: 12px; width: 7px; height: 7px; border-radius: 50%; background: var(--sage); }
+.sl-note { margin-top: 10px; font-size: 14px; color: var(--ink-dim); }
+
+/* Partnership callout */
+.sl-together { background: linear-gradient(160deg, #3a2742, #2f1f36); border: 1px solid var(--pink-deep); border-radius: 18px; padding: 22px 20px; margin: 24px 0 8px; }
+.sl-together-k { font-family: "Fraunces", serif; font-weight: 600; font-size: 20px; margin-bottom: 8px; color: var(--pink); }
+.sl-together p { font-size: 15px; color: var(--ink); }
+.sl-together b { color: #fff; }
+
+/* Mistakes */
+.sl-miss { background: var(--bg-card); border: 1px solid #36283d; border-left: 4px solid var(--orange); border-radius: 12px; padding: 13px 16px; margin: 10px 0; }
+.sl-mt { font-weight: 700; font-size: 15px; }
+.sl-mw { font-size: 13.5px; color: var(--ink-dim); margin-top: 3px; }
+
+/* Real-data progress */
+.sl-progress { margin: 6px 0 4px; }
+.sl-prog-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sl-prog-tiles > div { background: var(--bg-card); border: 1px solid #36283d; border-radius: 14px; padding: 14px 8px; text-align: center; }
+.sl-prog-num { display: block; font-family: "Fraunces", serif; font-size: 22px; font-weight: 600; color: var(--sage); line-height: 1.1; }
+.sl-prog-lab { font-size: 11px; color: var(--ink-dim); }
+.sl-prog-note { font-size: 13.5px; color: var(--ink-dim); margin-top: 10px; }
+.sl-prog-empty { background: var(--bg-card); border: 1px dashed #3b2c43; border-radius: 14px; padding: 18px; text-align: center; color: var(--ink-dim); font-size: 14px; }
+
+/* It's working / check with doctor */
+.sl-flags { display: grid; gap: 12px; margin-top: 14px; }
+.sl-flag { border-radius: 14px; padding: 16px 18px; font-size: 14.5px; border: 1px solid; }
+.sl-flag.green { background: linear-gradient(160deg, #25402f, #1f3327); border-color: #2e5440; color: #d8f2e3; }
+.sl-flag.red { background: linear-gradient(160deg, #4d2424, #3a1c1c); border-color: #5c2e2e; color: #f6cccc; }
+.sl-ft { font-weight: 700; margin-bottom: 6px; font-family: "Fraunces", serif; font-size: 16px; }
+.sl-flag.green .sl-ft { color: var(--sage); }
+.sl-flag.red .sl-ft { color: #f0a0a0; }
+.sl-flag ul { list-style: none; margin: 0; padding: 0; }
+.sl-flag li { padding: 3px 0 3px 16px; position: relative; }
+.sl-flag li::before { content: "·"; position: absolute; left: 4px; top: -1px; font-weight: 700; }
+
+/* Citations (tap to expand) */
+.sl-cite { background: var(--bg-card); border: 1px solid #36283d; border-radius: 12px; padding: 4px 18px; margin: 20px 0 0; }
+.sl-cite summary { cursor: pointer; padding: 12px 0; font-weight: 700; font-size: 14.5px; color: var(--sage); list-style-position: inside; }
+.sl-cite[open] summary { border-bottom: 1px solid #36283d; margin-bottom: 10px; }
+.sl-cite ul { margin: 0 0 8px; padding-left: 18px; }
+.sl-cite li { margin: 7px 0; font-size: 13.5px; color: var(--ink-dim); line-height: 1.5; }
+.sl-cite li b { color: var(--ink); }
+.sl-cite-note { font-size: 12px; color: var(--ink-dim); font-style: italic; padding-bottom: 12px; }
+
+.sl-footer { text-align: center; margin: 30px 0 8px; color: var(--ink-dim); font-size: 14px; }
+.sl-heart { color: var(--pink); font-style: italic; font-family: "Fraunces", serif; font-size: 17px; }

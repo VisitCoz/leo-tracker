@@ -441,3 +441,102 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 
 .sl-footer { text-align: center; margin: 30px 0 8px; color: var(--ink-dim); font-size: 14px; }
 .sl-heart { color: var(--pink); font-style: italic; font-family: "Fraunces", serif; font-size: 17px; }
+
+/* ============================================================
+   NEW: Leo home (sleep-first), More menu, Growth, Food
+   Reuses .card, .wake-card, .zone-*, .tiles/.tile, .btn-*, .log-*
+   ============================================================ */
+
+/* ---- More menu (old screens, kept just in case) ---- */
+.more-menu {
+  position: absolute; top: 60px; right: 14px; z-index: 40;
+  background: var(--bg-card-2); border: 1px solid #3a2c42; border-radius: 14px;
+  padding: 6px; box-shadow: 0 18px 44px rgba(0,0,0,.5); min-width: 210px;
+}
+.more-menu button {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--ink); font: inherit; font-size: 15px; padding: 12px 14px; border-radius: 10px; cursor: pointer;
+}
+.more-menu button:active { background: #3a2c42; }
+
+/* ---- Leo headline extras ---- */
+.leo-fixlink {
+  display: inline-block; margin-top: 12px; background: none; border: none;
+  color: rgba(255,255,255,.78); font: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer;
+}
+
+/* ---- Day-bar ---- */
+.leo-db-summary { font-size: 14px; color: var(--ink); margin: 0 0 12px; line-height: 1.45; }
+.leo-db-summary b { color: var(--sage); }
+.leo-daybar {
+  position: relative; height: 58px; border-radius: 12px; overflow: hidden;
+  background: #221a28;
+  background-image: linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px);
+  background-size: 12.5% 100%;
+}
+.leo-blk {
+  position: absolute; top: 6px; bottom: 6px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.leo-blk.night { background: linear-gradient(180deg, #7f9fd6, #5e79ad); color: rgba(255,255,255,.95); }
+.leo-blk.nap   { background: linear-gradient(180deg, var(--sage), var(--sage-deep)); color: #173226; }
+.leo-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--pink); z-index: 3; }
+.leo-now::after {
+  content: "now"; position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
+  background: var(--pink); color: #2a0f1c; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 5px;
+}
+.leo-db-axis { display: flex; justify-content: space-between; color: var(--ink-dim); font-size: 10px; margin-top: 8px; padding: 0 1px; }
+.leo-db-legend { display: flex; gap: 16px; margin-top: 11px; font-size: 12px; color: var(--ink-dim); }
+.leo-lg { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+.leo-lg.night { background: #7f9fd6; }
+.leo-lg.nap { background: var(--sage); }
+.leo-lg.now { background: var(--pink); }
+
+/* ---- Gauge ---- */
+.leo-gauge-bar { position: relative; height: 16px; border-radius: 8px; background: #3a2c42; overflow: hidden; }
+.leo-gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 8px; background: linear-gradient(90deg, var(--sage-deep), var(--sage)); }
+.leo-gauge-fill.met { background: linear-gradient(90deg, var(--sage-deep), var(--green)); }
+.leo-gauge-band {
+  position: absolute; top: -4px; bottom: -4px;
+  border-left: 2px dashed rgba(255,255,255,.55); border-right: 2px dashed rgba(255,255,255,.55);
+  background: rgba(255,255,255,.07);
+}
+.leo-gauge-num { font-family: "Fraunces", serif; font-size: 24px; font-weight: 600; margin-bottom: 10px; }
+.leo-gauge-num small { font-size: 13px; color: var(--ink-dim); font-weight: 500; }
+.leo-gauge-cap { margin-top: 10px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.45; }
+.leo-gauge-cap b { color: var(--sage); }
+
+/* ---- Tiles (2-up) + log hint ---- */
+.leo-tiles { grid-template-columns: 1fr 1fr; }
+.leo-log-hint { font-size: 12px; color: var(--ink-dim); margin: -4px 0 8px; }
+
+/* ---- Ask card ---- */
+.leo-ask { display: flex; align-items: center; gap: 12px; cursor: pointer;
+  background: linear-gradient(150deg, #3a2338, #2a1a2e); }
+.leo-ask-av { width: 40px; height: 40px; border-radius: 50%; background: var(--pink); display: grid; place-items: center; font-size: 20px; flex: none; }
+.leo-ask-t b { font-family: "Fraunces", serif; font-size: 15px; }
+.leo-ask-t span { display: block; color: var(--ink-dim); font-size: 12px; margin-top: 2px; }
+.leo-ask-go { margin-left: auto; color: var(--ink-dim); font-size: 22px; }
+
+/* ---- Growth ---- */
+.grow-lead { font-size: 13.5px; color: var(--ink-dim); margin-bottom: 12px; }
+.grow-entry { display: flex; gap: 8px; margin-bottom: 10px; }
+.grow-inp {
+  flex: 1; min-width: 0; background: #1f1726; border: 1px solid #3a2c42; border-radius: 12px;
+  padding: 12px; color: var(--ink); font-size: 15px;
+}
+.grow-inp::placeholder { color: #7d6d84; }
+.grow-date { flex: 1.2; }
+.grow-stats { display: flex; gap: 10px; margin-top: 14px; }
+.grow-stat { flex: 1; background: var(--bg-card-2); border-radius: 14px; padding: 13px; }
+.grow-stat .v { font-family: "Fraunces", serif; font-size: 22px; font-weight: 600; }
+.grow-stat .p { color: var(--sage); font-size: 13px; font-weight: 600; margin-top: 2px; }
+.grow-stat .l { color: var(--ink-dim); font-size: 11px; margin-top: 3px; }
+.grow-disc { font-size: 11.5px; color: var(--ink-dim); font-style: italic; text-align: center; margin: 4px 0 10px; }
+
+/* ---- Food (starting solids) — reuses sleep-tab (.sl-*) styles already in the sheet ---- */
+.food-note {
+  background: #2a3a30; border: 1px solid #3d5545; color: #bfe0cd;
+  font-size: 13px; border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; line-height: 1.45;
+}

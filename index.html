@@ -49,15 +49,76 @@
       </div>
       <div class="topbar-actions">
         <button id="bell-btn" class="icon-btn" title="Enable alerts" aria-label="Enable alerts">🔔</button>
+        <button id="more-btn" class="icon-btn" title="More" aria-label="More">⋯</button>
         <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
+      </div>
+      <!-- More menu: the old screens, kept just in case -->
+      <div id="more-menu" class="more-menu hidden">
+        <button data-tab="home">🍼 Feeds &amp; milestones</button>
+        <button data-tab="planner">🗓️ Day planner</button>
       </div>
     </header>
 
     <!-- Persistent wake/sleep timer — stays visible on every tab while the app is open -->
     <div id="topbanner" class="topbanner hidden" aria-live="polite"></div>
 
-    <!-- ============ HOME TAB ============ -->
-    <section id="tab-home" class="tab">
+    <!-- ============ LEO — new default home (sleep-first) ============ -->
+    <section id="tab-leo" class="tab">
+      <!-- 1. Sleep / awake headline (same math + color zones as the old wake card) -->
+      <section id="leo-wake" class="card wake-card zone-green">
+        <p id="leo-wake-eyebrow" class="card-eyebrow">Awake for</p>
+        <p id="leo-wake-time" class="wake-time">0:00</p>
+        <p id="leo-wake-status" class="wake-status">Window closes at —</p>
+        <button id="leo-sleep-btn" class="btn btn-sleep btn-block">Start sleep</button>
+        <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
+      </section>
+
+      <!-- 2. Today's rhythm — day-bar -->
+      <section class="card">
+        <div class="card-head"><h2>Today's rhythm</h2></div>
+        <p id="leo-db-summary" class="leo-db-summary">—</p>
+        <div id="leo-daybar" class="leo-daybar"></div>
+        <div class="leo-db-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
+        <div class="leo-db-legend">
+          <span><i class="leo-lg night"></i>Night sleep</span>
+          <span><i class="leo-lg nap"></i>Nap</span>
+          <span><i class="leo-lg now"></i>Now</span>
+        </div>
+      </section>
+
+      <!-- 3. Sleep vs. what's normal for his age -->
+      <section class="card">
+        <div class="card-head"><h2>Sleep vs. normal</h2><span id="leo-gauge-goal" class="since">—</span></div>
+        <div id="leo-gauge"></div>
+        <p id="leo-gauge-cap" class="leo-gauge-cap"></p>
+      </section>
+
+      <!-- 4. Two key sleep numbers -->
+      <section class="tiles leo-tiles">
+        <div class="tile"><span id="leo-longest" class="tile-num">—</span><span class="tile-label">longest night stretch — his "sleeping through the night" number</span></div>
+        <div class="tile"><span id="leo-avgww" class="tile-num">—</span><span class="tile-label">average wake window today</span></div>
+      </section>
+
+      <!-- 5. Editable today log — fix a mislogged time in one tap -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Today's log</h2>
+          <button id="leo-export-btn" class="link-btn">Export CSV</button>
+        </div>
+        <p class="leo-log-hint">Tap ✏️ to fix a time · 🗑 to remove</p>
+        <ul id="leo-log-list" class="log-list"><li class="log-empty">No entries yet today.</li></ul>
+      </section>
+
+      <!-- 6. Ask Leo's AI -->
+      <section id="leo-ask-card" class="card leo-ask">
+        <div class="leo-ask-av">💬</div>
+        <div class="leo-ask-t"><b>Ask about Leo</b><span>I know his logs — sleep, feeds, growth</span></div>
+        <div class="leo-ask-go">›</div>
+      </section>
+    </section>
+
+    <!-- ============ HOME TAB (kept — reachable via ⋯ More) ============ -->
+    <section id="tab-home" class="tab hidden">
       <!-- Wake-window timer (headline) -->
       <section id="wake-card" class="card wake-card zone-green">
         <p id="wake-eyebrow" class="card-eyebrow">Awake for</p>
@@ -134,33 +195,41 @@
       </section>
     </section>
 
-    <!-- ============ STATS TAB ============ -->
-    <section id="tab-stats" class="tab hidden">
-      <div class="seg" id="range-seg">
-        <button class="seg-btn active" data-range="1">Today</button>
-        <button class="seg-btn" data-range="7">7 days</button>
-      </div>
-
+    <!-- ============ GROWTH TAB ============ -->
+    <section id="tab-grow" class="tab hidden">
       <section class="card">
-        <h2>Sleep</h2>
-        <div class="stat-row"><span>☀️ Daytime naps</span><span id="s-day" class="stat-val">—</span></div>
-        <div class="stat-row"><span>🌙 Night sleep</span><span id="s-night" class="stat-val">—</span></div>
-        <div class="stat-row"><span>Total sleep</span><span id="s-total" class="stat-val">—</span></div>
-        <div class="stat-row"><span>Avg nap length</span><span id="s-avgnap" class="stat-val">—</span></div>
+        <div class="card-head"><h2>Growth</h2></div>
+        <p class="grow-lead">Log his weight &amp; height — the app plots his WHO percentile.</p>
+        <div class="grow-entry">
+          <input id="grow-weight" class="grow-inp" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Weight (kg)" />
+          <input id="grow-height" class="grow-inp" type="number" inputmode="decimal" step="0.1" min="0" placeholder="Height (cm)" />
+          <input id="grow-date" class="grow-inp grow-date" type="date" />
+        </div>
+        <button id="grow-save" class="btn btn-primary btn-block">Save measurement</button>
+        <p id="grow-msg" class="auth-msg"></p>
+        <div id="grow-stats" class="grow-stats"></div>
       </section>
 
       <section class="card">
-        <h2>Feeding</h2>
-        <div class="stat-row"><span>🤱 Breast sessions</span><span id="s-breast" class="stat-val">—</span></div>
-        <div class="stat-row"><span>Total breast time</span><span id="s-breasttime" class="stat-val">—</span></div>
-        <div class="stat-row"><span>🍼 Bottles</span><span id="s-bottle" class="stat-val">—</span></div>
-        <div class="stat-row"><span>Total bottle volume</span><span id="s-bottleml" class="stat-val">—</span></div>
+        <div class="card-head"><h2>Weight-for-age</h2></div>
+        <canvas id="grow-weight-chart" height="200"></canvas>
       </section>
 
       <section class="card">
-        <h2>Sleep — last 7 days</h2>
-        <canvas id="sleep-chart" height="200"></canvas>
+        <div class="card-head"><h2>Height-for-age</h2></div>
+        <canvas id="grow-height-chart" height="200"></canvas>
       </section>
+
+      <section class="card">
+        <div class="card-head"><h2>History</h2></div>
+        <ul id="grow-list" class="log-list"><li class="log-empty">No measurements yet.</li></ul>
+      </section>
+      <p class="grow-disc">WHO Child Growth Standards (boys). Percentiles are approximate — confirm with Dr. León Magaña.</p>
+    </section>
+
+    <!-- ============ FOOD TAB (starting solids) ============ -->
+    <section id="tab-food" class="tab hidden">
+      <div id="food-content"></div>
     </section>
 
     <!-- ============ ASK TAB ============ -->
@@ -192,10 +261,10 @@
 
     <!-- ============ BOTTOM NAV ============ -->
     <nav class="bottomnav">
-      <button class="nav-btn active" data-tab="home"><span>🏠</span>Home</button>
-      <button class="nav-btn" data-tab="stats"><span>📊</span>Stats</button>
-      <button class="nav-btn" data-tab="planner"><span>🗓️</span>Plan</button>
+      <button class="nav-btn active" data-tab="leo"><span>🏠</span>Leo</button>
+      <button class="nav-btn" data-tab="grow"><span>📈</span>Growth</button>
       <button class="nav-btn" data-tab="sleep"><span>🌙</span>Sleep</button>
+      <button class="nav-btn" data-tab="food"><span>🍽️</span>Food</button>
       <button class="nav-btn" data-tab="ask"><span>💬</span>Ask</button>
     </nav>
   </main>

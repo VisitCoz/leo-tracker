@@ -1,10 +1,31 @@
 # Leo Tracker
 
-A calm, mobile-first **baby tracker** for Leo — feeds, sleep, milestones — built as an
-installable web app (PWA). Two parents share one login and see each other's entries live.
+A calm, mobile-first **baby tracker** for Leo — built as an installable web app (PWA).
+Two parents share one login and see each other's entries live.
 
 This is also Mike's **first Supabase project** and the **template** for future apps
 (VisitCozumel, TierraMaya).
+
+## Screens (rebuilt 2026-07 to be sleep-first)
+
+The app is deliberately focused on the one thing we use daily — **sleep ⇄ awake** — and grows
+with Leo. Bottom nav: **Leo · Growth · Sleep · Food · Ask**.
+
+- **Leo** (default home): sleep/awake headline + color zones, a **day-bar** (today's rhythm at a
+  glance), a **sleep-vs-age-normal gauge**, longest-night-stretch + avg-wake-window tiles, an
+  **editable today log** (tap ✏️ to fix a mislogged time), and one-tap **Ask**.
+- **Growth**: log weight + height → **WHO boys percentile** + P3/P50/P97 curves (`growth` table).
+- **Sleep**: the research-based, cited sleep-through-the-night guide (age-aware). Unchanged.
+- **Food**: research-based starting-solids guide (iron-first, allergen rule, 4-week plan, recipe).
+- **Ask**: chat with Claude (Opus 4.8) using Leo's age + logged data.
+- **⋯ More** (header): the older **Feeds & milestones** and **Day planner** screens, kept just in case.
+
+> The app is meant to **evolve as Leo evolves.** Next up: a daily read/talk streak, and
+> word-by-word streaming + voice input in Ask (deferred).
+
+### One-time setup for Growth
+Run `schema-growth.sql` in Supabase → SQL Editor (creates the `growth` table). Until then the
+Growth tab shows a friendly "run the SQL" note instead of erroring.
 
 ---
 

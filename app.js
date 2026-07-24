@@ -30,6 +30,9 @@ let alarmsOn = false;     // browser-notification permission granted?
 let statsRange = 1;       // Stats tab range in days (1 = today, 7 = week)
 let sleepChart = null;    // Chart.js instance
 let chatBusy = false;     // a chat reply is in flight
+let growth = [];          // weight/height measurements (growth table)
+let growWChart = null;    // Chart.js — weight-for-age
+let growHChart = null;    // Chart.js — height-for-age
 
 // ---- Leo's birthday → age ("4 mo 15 d") ----------------------
 const BIRTH = new Date(2026, 0, 23); // 23 Jan 2026 (month is 0-indexed)
@@ -145,6 +148,7 @@ async function showApp() {
   $("age-line").textContent = "Leo · " + ageString();
   await loadEvents();
   await loadMessages();
+  await loadGrowth();
   subscribeRealtime();
   loadInsight();                               // cached, see below
   if (!tick) tick = setInterval(render, 1000); // live clocks update every second
@@ -162,17 +166,32 @@ async function loadEvents() {
   events = data || [];
   render();
   renderSummary();   // data-driven: only redraw on change, not every second
-  renderLog();       // (so the inline delete confirm isn't wiped mid-tap)
+  renderLog("log-list");       // old Home log (kept)
+  renderLog("leo-log-list");   // new Leo home log — data-driven, not per-second
+  renderLeoData();             // gauge + tiles for the Leo home
   renderStats();
   if (!$("tab-sleep").classList.contains("hidden")) renderSleep();
 }
 
+// Weight/height measurements (separate table, mirrors loadEvents).
+async function loadGrowth() {
+  if (!sb) return;
+  const { data, error } = await sb.from("growth").select("*").order("measured_at", { ascending: true });
+  if (error) { console.error(error); return; }   // table may not exist until schema-growth.sql is run
+  growth = data || [];
+  renderGrowth();
+}
+
 // Realtime: when ANY row in `events` is added/changed/removed (by either
 // parent, on any device), reload so both screens stay in sync.
+let realtimeOn = false;
 function subscribeRealtime() {
+  if (realtimeOn) return;   // onAuthStateChange can fire again (token refresh) — subscribe once
+  realtimeOn = true;
   sb.channel("events-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "events" }, loadEvents)
     .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, loadMessages)
+    .on("postgres_changes", { event: "*", schema: "public", table: "growth" }, loadGrowth)
     .subscribe();
 }
 
@@ -340,6 +359,8 @@ async function saveEdit() {
 // log every second was wiping out the "Delete/Keep" confirm before you could tap.
 function render() {
   renderWake();
+  renderLeoWake();     // new Leo home headline (same math, its own elements)
+  renderDayBar();      // new Leo home day-bar (blocks + now marker + summary)
   renderLive();
   renderFeedButtons();
   renderSleepButton();
@@ -591,8 +612,9 @@ function pipRow(label, count, low, high, value) {
 
 const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨" };
 
-function renderLog() {
-  const list = $("log-list");
+function renderLog(listId) {
+  const list = $(listId || "log-list");
+  if (!list) return;
   const today = events.filter((e) => isToday(e.start_at));
   if (today.length === 0) { list.innerHTML = '<li class="log-empty">No entries yet today.</li>'; return; }
 
@@ -744,10 +766,12 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "stats") renderStats();
+  if (name === "leo")     { renderLeoWake(); renderDayBar(); renderLeoData(); }
+  if (name === "grow")    renderGrowth();      // also (re)builds the charts now the canvas is visible
+  if (name === "food")    renderFood();
   if (name === "planner") renderPlanner();
-  if (name === "sleep") renderSleep();
-  if (name === "ask") scrollChat();
+  if (name === "sleep")   renderSleep();
+  if (name === "ask")     scrollChat();
 }
 
 // ============================================================
@@ -1216,6 +1240,7 @@ function inRange(iso) {
   return d >= start;
 }
 function renderStats() {
+  if (!$("s-day")) return;   // Stats tab removed from the UI — nothing to draw
   const sel = events.filter((e) => inRange(e.start_at));
   let dayMs = 0, nightMs = 0, napCount = 0, breastMs = 0, breastCount = 0, bottleCount = 0, bottleMl = 0;
   for (const e of sel) {
@@ -1340,6 +1365,415 @@ async function sendChat(e) {
 }
 
 // ============================================================
+//  10h. LEO HOME — sleep-first default screen
+//  Reuses the wake-window math, targetsForAge(), sleepProgress(),
+//  and plDur/plFmt. Live bits (headline + day-bar) tick every second
+//  via render(); data bits (gauge + tiles + log) refresh on loadEvents.
+// ============================================================
+
+// Headline — same math + color zones as renderWake(), its own elements.
+function renderLeoWake() {
+  const card = $("leo-wake");
+  if (!card) return;
+  const btn = $("leo-sleep-btn");
+  const sleeping = openSleep();
+  if (sleeping) {
+    card.className = "card wake-card zone-green";
+    $("leo-wake-eyebrow").textContent = "Asleep for 💤";
+    $("leo-wake-time").textContent = dur(now() - new Date(sleeping.start_at));
+    $("leo-wake-status").textContent = "Tap End sleep when he wakes";
+    if (btn) { btn.textContent = "End sleep"; btn.classList.add("active"); }
+    return;
+  }
+  if (btn) { btn.textContent = "Start sleep"; btn.classList.remove("active"); }
+  $("leo-wake-eyebrow").textContent = "Awake for";
+  const last = lastEndedSleep();
+  if (!last) {
+    $("leo-wake-time").textContent = "—";
+    $("leo-wake-status").textContent = "Log a sleep to start the wake window";
+    card.className = "card wake-card zone-green";
+    return;
+  }
+  const wokeAt = new Date(last.end_at);
+  const mins = (now() - wokeAt) / 60000;
+  $("leo-wake-time").textContent = dur(now() - wokeAt);
+  const closesAt = new Date(wokeAt.getTime() + WAKE_TARGET * 60000);
+  $("leo-wake-status").textContent = `Window closes at ${clockTime(closesAt)}`;
+  let zone = "green";
+  if (mins > ZONE.orange) zone = "red";
+  else if (mins > ZONE.amber) zone = "orange";
+  else if (mins >= ZONE.green) zone = "amber";
+  card.className = `card wake-card zone-${zone}`;
+  // NB: the 90-min alarm fires from renderWake() (old card), so it isn't doubled here.
+}
+
+// Sleep clipped to the current calendar day. Shared by the day-bar AND the gauge
+// so an overnight block (started before midnight) counts consistently in both.
+function sleepTodayStats() {
+  const t = now();
+  const dayStart = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
+  const dayMs = 86400000, nowMs = t.getTime();
+  let sleptMs = 0, naps = 0;
+  const blocks = [];
+  const sleeps = events.filter((e) =>
+    e.type === "sleep" &&
+    new Date(e.start_at).getTime() < dayStart + dayMs &&
+    (e.end_at ? new Date(e.end_at).getTime() : nowMs) >= dayStart);
+  for (const e of sleeps) {
+    const s  = Math.max(new Date(e.start_at).getTime(), dayStart);
+    const en = Math.min(e.end_at ? new Date(e.end_at).getTime() : nowMs, dayStart + dayMs);
+    if (en <= s) continue;
+    sleptMs += en - s;
+    if (e.subtype === "nap" && e.end_at) naps++;
+    blocks.push({ e, left: (s - dayStart) / dayMs * 100, width: (en - s) / dayMs * 100, ms: en - s });
+  }
+  return { dayStart, dayMs, nowMs, sleptMs, naps, blocks };
+}
+
+// Day-bar — sleep blocks clipped to today + "now" marker + a plain summary line.
+function renderDayBar() {
+  const bar = $("leo-daybar");
+  if (!bar) return;
+  const { dayStart, dayMs, nowMs, sleptMs, naps, blocks } = sleepTodayStats();
+  let html = "";
+  for (const b of blocks) {
+    const cls = b.e.subtype === "night" ? "night" : "nap";
+    const label = b.width > 9 ? plDur(Math.round(b.ms / 60000)) : "";
+    html += `<div class="leo-blk ${cls}" style="left:${b.left}%;width:${b.width}%">${label}</div>`;
+  }
+  html += `<div class="leo-now" style="left:${(nowMs - dayStart) / dayMs * 100}%"></div>`;
+  bar.innerHTML = html;
+
+  const sleeping = openSleep();
+  let tail;
+  if (sleeping) tail = `asleep now for ${dur(nowMs - new Date(sleeping.start_at))}`;
+  else { const l = lastEndedSleep(); tail = l ? `awake now for ${dur(nowMs - new Date(l.end_at))}` : "no sleep logged yet"; }
+  const napWord = naps === 1 ? "nap" : "naps";
+  $("leo-db-summary").innerHTML = `<b>${plDur(Math.round(sleptMs / 60000))}</b> asleep so far · ${naps} ${napWord} · ${tail}`;
+}
+
+// Average of today's completed wake windows (gap between a sleep ending and the next starting).
+function avgWakeWindowMins() {
+  const s = events.filter((e) => e.type === "sleep" && isToday(e.start_at))
+                  .slice().sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+  const gaps = [];
+  for (let i = 0; i < s.length; i++) {
+    if (!s[i].end_at) continue;
+    const wakeEnd = new Date(s[i].end_at).getTime();
+    const next = s.slice(i + 1).find((x) => new Date(x.start_at).getTime() >= wakeEnd);
+    if (next) gaps.push((new Date(next.start_at).getTime() - wakeEnd) / 60000);
+  }
+  return gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
+}
+
+// Gauge (sleep vs. age-normal) + the two tiles. Data-driven (called from loadEvents).
+function renderLeoData() {
+  const g = $("leo-gauge");
+  if (!g) return;
+  const sleepMs = sleepTodayStats().sleptMs;   // clipped to today — matches the day-bar
+  const sleepH = sleepMs / 3600000;
+  const m = ageMonths();
+  const tg = targetsForAge(m);
+  const fillPct = Math.min(100, (sleepH / tg.sleepHigh) * 100);
+  const lowPct = (tg.sleepLow / tg.sleepHigh) * 100;
+  const met = sleepH >= tg.sleepLow;
+  $("leo-gauge-goal").textContent = `healthy ${tg.sleepLow}–${tg.sleepHigh}h/day`;
+  g.innerHTML =
+    `<div class="leo-gauge-num">${plDur(Math.round(sleepMs / 60000))} <small>slept today</small></div>` +
+    `<div class="leo-gauge-bar"><div class="leo-gauge-fill${met ? " met" : ""}" style="width:${fillPct}%"></div>` +
+    `<div class="leo-gauge-band" style="left:${lowPct}%;right:0"></div></div>`;
+  const cap = $("leo-gauge-cap");
+  if (met) cap.innerHTML = `In the healthy range for ${m} months ✓ <b>(${tg.sleepLow}–${tg.sleepHigh}h)</b>. Shaded zone = target.`;
+  else {
+    const need = Math.max(0, tg.sleepLow - sleepH);
+    cap.innerHTML = `~<b>${plDur(Math.round(need * 60))}</b> more to reach the ${tg.sleepLow}h low end (most comes overnight). Shaded zone = ${tg.sleepLow}–${tg.sleepHigh}h target.`;
+  }
+  const p = sleepProgress();
+  $("leo-longest").textContent = p.longest ? plDur(Math.round(p.longest / 60000)) : "—";
+  const aww = avgWakeWindowMins();
+  $("leo-avgww").textContent = aww != null ? plDur(aww) : "—";
+}
+
+// ============================================================
+//  10i. GROWTH — weight/height + WHO percentiles + curves
+//  WHO Child Growth Standards, boys. LMS anchors (interpolated
+//  between); dense 0–12 mo, sparser after. Percentiles approximate
+//  and clearly flagged — confirm with the pediatrician.
+// ============================================================
+
+// weight-for-age (kg): [ageMonths, L, M, S]
+const WHO_WFA_BOYS = [
+  [0,  0.3487, 3.3464, 0.14602],
+  [1,  0.2297, 4.4709, 0.13395],
+  [2,  0.1970, 5.5675, 0.12385],
+  [3,  0.1738, 6.3762, 0.11727],
+  [4,  0.1553, 7.0023, 0.11316],
+  [5,  0.1395, 7.5105, 0.11080],
+  [6,  0.1257, 7.9340, 0.10958],
+  [7,  0.1134, 8.2970, 0.10902],
+  [8,  0.1021, 8.6151, 0.10882],
+  [9,  0.0917, 8.9014, 0.10881],
+  [10, 0.0820, 9.1649, 0.10891],
+  [11, 0.0730, 9.4122, 0.10906],
+  [12, 0.0644, 9.6479, 0.10925],
+  [15, 0.0408, 10.3108, 0.10995],
+  [18, 0.0194, 10.9385, 0.11080],
+  [21, 0.0000, 11.5486, 0.11168],
+  [24, -0.0181, 12.1515, 0.11250],
+];
+// length/height-for-age (cm): WHO uses L=1 → [ageMonths, M, S]
+const WHO_LFA_BOYS = [
+  [0,  49.8842, 0.03795],
+  [1,  54.7244, 0.03557],
+  [2,  58.4249, 0.03424],
+  [3,  61.4292, 0.03328],
+  [4,  63.8860, 0.03257],
+  [5,  65.9026, 0.03204],
+  [6,  67.6236, 0.03165],
+  [7,  69.1645, 0.03139],
+  [8,  70.5994, 0.03119],
+  [9,  71.9687, 0.03102],
+  [10, 73.2812, 0.03089],
+  [11, 74.5388, 0.03077],
+  [12, 75.7488, 0.03068],
+  [15, 79.1458, 0.03048],
+  [18, 82.2587, 0.03051],
+  [21, 85.0499, 0.03060],
+  [24, 87.1161, 0.03157],
+];
+
+// Age in (fractional) months at a given date, off the app's BIRTH constant.
+function ageMonthsAt(dateStr) { return Math.max(0, (new Date(dateStr) - BIRTH) / (30.4375 * 86400000)); }
+
+// Gaussian CDF via an erf approximation (Abramowitz & Stegun 7.1.26).
+function erf(x) {
+  const s = x < 0 ? -1 : 1; x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return s * y;
+}
+const normCdf = (z) => 0.5 * (1 + erf(z / Math.SQRT2));
+
+// Linear-interpolate LMS at a (fractional) age from the anchor table.
+function interpLMS(anchors, months, hasL) {
+  months = Math.min(Math.max(months, anchors[0][0]), anchors[anchors.length - 1][0]);
+  let lo = anchors[0], hi = anchors[anchors.length - 1];
+  for (let i = 0; i < anchors.length - 1; i++) {
+    if (months >= anchors[i][0] && months <= anchors[i + 1][0]) { lo = anchors[i]; hi = anchors[i + 1]; break; }
+  }
+  const span = hi[0] - lo[0], f = span ? (months - lo[0]) / span : 0;
+  const mix = (a, b) => a + (b - a) * f;
+  if (hasL) return { L: mix(lo[1], hi[1]), M: mix(lo[2], hi[2]), S: mix(lo[3], hi[3]) };
+  return { L: 1, M: mix(lo[1], hi[1]), S: mix(lo[2], hi[2]) };
+}
+
+// Measured value → percentile (0–100) via the LMS z-score.
+function lmsToPercentile(value, L, M, S) {
+  const z = Math.abs(L) < 1e-6 ? Math.log(value / M) / S : (Math.pow(value / M, L) - 1) / (L * S);
+  return Math.min(99.9, Math.max(0.1, normCdf(z) * 100));
+}
+// A WHO percentile curve across 0–24 mo for a given z (P3=-1.881, P50=0, P97=1.881).
+function whoCurve(anchors, hasL, z) {
+  const pts = [];
+  for (let m = 0; m <= 24; m++) {
+    const { L, M, S } = interpLMS(anchors, m, hasL);
+    const v = Math.abs(L) < 1e-6 ? M * Math.exp(S * z) : M * Math.pow(1 + L * S * z, 1 / L);
+    pts.push({ x: m, y: +v.toFixed(2) });
+  }
+  return pts;
+}
+function ordinal(n) { n = Math.round(n); const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+
+async function saveGrowth() {
+  const msg = $("grow-msg");
+  const w = parseFloat($("grow-weight").value);
+  const h = parseFloat($("grow-height").value);
+  const date = $("grow-date").value || new Date().toISOString().slice(0, 10);
+  if ((!w || w <= 0) && (!h || h <= 0)) { msg.textContent = "Enter a weight and/or height."; return; }
+  msg.textContent = "Saving…";
+  const rows = [];
+  if (w > 0) rows.push({ kind: "weight", value: w, measured_at: date });
+  if (h > 0) rows.push({ kind: "height", value: h, measured_at: date });
+  const { error } = await sb.from("growth").insert(rows);
+  if (error) {
+    msg.textContent = /relation|does not exist|schema cache/i.test(error.message)
+      ? "Growth table not found — run schema-growth.sql in Supabase first." : error.message;
+    return;
+  }
+  $("grow-weight").value = ""; $("grow-height").value = ""; msg.textContent = "Saved ✓";
+  await loadGrowth();
+}
+async function deleteGrowth(id) { await sb.from("growth").delete().eq("id", id); await loadGrowth(); }
+
+function growStatHTML(v, p, label) {
+  return `<div class="grow-stat"><div class="v">${v}</div><div class="p">~${ordinal(p)} percentile</div><div class="l">${label} · WHO boys</div></div>`;
+}
+function renderGrowth() {
+  const statsEl = $("grow-stats");
+  if (!statsEl) return;
+  if ($("grow-date") && !$("grow-date").value) $("grow-date").value = new Date().toISOString().slice(0, 10);
+  const weights = growth.filter((g) => g.kind === "weight");
+  const heights = growth.filter((g) => g.kind === "height");
+  const lw = weights[weights.length - 1], lh = heights[heights.length - 1];
+  let html = "";
+  if (lw) { const a = ageMonthsAt(lw.measured_at); const { L, M, S } = interpLMS(WHO_WFA_BOYS, a, true);  html += growStatHTML(lw.value + " kg", lmsToPercentile(lw.value, L, M, S), "Weight"); }
+  if (lh) { const a = ageMonthsAt(lh.measured_at); const { L, M, S } = interpLMS(WHO_LFA_BOYS, a, false); html += growStatHTML(lh.value + " cm", lmsToPercentile(lh.value, L, M, S), "Height"); }
+  statsEl.innerHTML = html || `<p class="grow-lead">Save his first measurement to see percentiles.</p>`;
+  renderGrowList();
+  renderGrowCharts();
+}
+function renderGrowList() {
+  const list = $("grow-list");
+  if (!list) return;
+  if (!growth.length) { list.innerHTML = '<li class="log-empty">No measurements yet.</li>'; return; }
+  list.innerHTML = "";
+  growth.slice().reverse().forEach((g) => {
+    const li = document.createElement("li"); li.className = "log-item";
+    li.innerHTML = `<span class="log-emoji">${g.kind === "weight" ? "⚖️" : "📏"}</span><div class="log-body"><div class="log-title"></div><div class="log-meta"></div></div>`;
+    li.querySelector(".log-title").textContent = `${g.value} ${g.kind === "weight" ? "kg" : "cm"}`;
+    li.querySelector(".log-meta").textContent = new Date(g.measured_at).toLocaleDateString();
+    const del = document.createElement("button"); del.className = "del-btn"; del.textContent = "🗑";
+    del.addEventListener("click", () => {
+      const wrap = document.createElement("span"); wrap.className = "del-confirm";
+      wrap.innerHTML = `<button class="del-yes">Delete</button><button class="del-no">Keep</button>`;
+      del.replaceWith(wrap);
+      wrap.querySelector(".del-yes").addEventListener("click", () => deleteGrowth(g.id));
+      wrap.querySelector(".del-no").addEventListener("click", () => wrap.replaceWith(del));
+    });
+    li.appendChild(del); list.appendChild(li);
+  });
+}
+function renderGrowCharts() {
+  if (!window.Chart) return;
+  growWChart = buildGrowChart(growWChart, "grow-weight-chart", WHO_WFA_BOYS, true,  growth.filter((g) => g.kind === "weight"), "kg");
+  growHChart = buildGrowChart(growHChart, "grow-height-chart", WHO_LFA_BOYS, false, growth.filter((g) => g.kind === "height"), "cm");
+}
+function buildGrowChart(inst, canvasId, anchors, hasL, rows, unit) {
+  const canvas = $(canvasId);
+  if (!canvas) return inst;
+  if (!inst && canvas.offsetParent === null) return inst; // hidden — build when the tab opens
+  const leo = rows.map((g) => ({ x: +ageMonthsAt(g.measured_at).toFixed(2), y: g.value })).sort((a, b) => a.x - b.x);
+  const data = { datasets: [
+    { label: "P3",  data: whoCurve(anchors, hasL, -1.88079), borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false },
+    { label: "P50", data: whoCurve(anchors, hasL, 0),        borderColor: "#8f99b8", borderWidth: 2, pointRadius: 0, fill: false },
+    { label: "P97", data: whoCurve(anchors, hasL, 1.88079),  borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false },
+    { label: "Leo", data: leo, borderColor: "#e98aa8", backgroundColor: "#e98aa8", borderWidth: 2, pointRadius: 4, showLine: true },
+  ] };
+  if (inst) { inst.data = data; inst.update(); return inst; }
+  return new Chart(canvas, {
+    type: "line", data,
+    options: {
+      responsive: true, parsing: false,
+      plugins: { legend: { labels: { color: "#b9a6b6", boxWidth: 12 } } },
+      scales: {
+        x: { type: "linear", min: 0, max: 24, title: { display: true, text: "age (months)", color: "#b9a6b6" }, ticks: { color: "#b9a6b6", stepSize: 3 }, grid: { color: "#36283d" } },
+        y: { title: { display: true, text: unit, color: "#b9a6b6" }, ticks: { color: "#b9a6b6" }, grid: { color: "#36283d" } },
+      },
+    },
+  });
+}
+
+// ============================================================
+//  10j. FOOD — starting solids (research-based, age-aware)
+//  Static content; reuses the sleep-tab (.sl-*) styles.
+// ============================================================
+function foodBannerHTML() {
+  const mo = ageMonths(), w = ageWeeks();
+  const moWord = mo === 1 ? "month" : "months";
+  if (w < 17) return `<div class="sl-banner amber"><div class="sl-banner-eyebrow">🔴 Not yet — milk only</div>
+    <p>Leo is <b>${mo} ${moWord}</b>. Under ~4 months it's breast/formula only. This section turns green as he nears 6 months — the window to begin.</p></div>`;
+  if (w < 26) return `<div class="sl-banner green"><div class="sl-banner-eyebrow">🟡 Almost time — get ready</div>
+    <p>Leo is <b>${mo} ${moWord}</b>. Watch for the four readiness signs below; most babies start solids at 6 months. Milk stays the main nutrition to age 1.</p></div>`;
+  return `<div class="sl-banner green"><div class="sl-banner-eyebrow">🟢 Green light — he's in the window</div>
+    <p>Leo is <b>${mo} ${moWord}</b> — the right time to begin solids. Start iron-rich, go slow, keep milk as the main nutrition to age 1.</p></div>`;
+}
+const FOOD_BODY = `
+  <h2>1 · Is he ready?</h2>
+  <p class="sl-lead">Look for all four signs, not just age (~6 months):</p>
+  <div class="sl-card"><ul>
+    <li>Sits with support &amp; holds his head steady</li>
+    <li>Lost the tongue-thrust reflex (doesn't push food straight back out)</li>
+    <li>Watches your food, reaches, opens his mouth</li>
+    <li>Can move food back and swallow</li>
+  </ul></div>
+
+  <h2>2 · The one principle: start with iron</h2>
+  <div class="sl-card">
+    <p>A baby's iron stores run out around 6 months and breastmilk is low in iron — and iron fuels brain development now. So <b>first foods should be iron-rich</b>. The old "rice cereal first" rule is out; order doesn't matter medically, so lead with iron. Pair it with a little vitamin C (bell pepper, tomato, citrus) to boost absorption.</p>
+    <p class="sl-note"><em>Ask Dr. León about a vitamin D drop (400 IU/day) — recommended for all breastfed babies.</em></p>
+  </div>
+
+  <h2>3 · Exactly where to start</h2>
+  <div class="sl-card sl-order">
+    <div class="sl-ostep"><div class="sl-onum">🥣</div><div><div class="sl-ot">Iron-fortified oat cereal</div><div class="sl-od">Easiest first step. Mix with breastmilk/formula to a thin puree.</div></div></div>
+    <div class="sl-ostep"><div class="sl-onum">🍗</div><div><div class="sl-ot">Pureed chicken or beef</div><div class="sl-od">The most absorbable iron there is.</div></div></div>
+    <div class="sl-ostep"><div class="sl-onum">🫘</div><div><div class="sl-ot">Well-cooked black beans / lentils</div><div class="sl-od">Cozumel staple — iron + protein, cooked very soft, no salt.</div></div></div>
+    <div class="sl-ostep last"><div class="sl-onum">🥑</div><div><div class="sl-ot">Avocado (aguacate)</div><div class="sl-od">Local, perfect texture, brain-healthy fats. Great pairing food.</div></div></div>
+  </div>
+  <p class="sl-lead">Then add color: sweet potato (camote), squash (calabaza), banana, pear, mango.</p>
+
+  <h2>4 · How to cook &amp; serve</h2>
+  <div class="sl-card"><ul>
+    <li><b>Steam, boil, or roast</b> until fork-soft, then blend/mash. Thin with breastmilk, formula, or the cooking water.</li>
+    <li><b>Season with nothing</b> — no salt, no sugar, no honey. Herbs/cinnamon are fine.</li>
+    <li><b>Texture ladder:</b> smooth puree → thicker mash → soft lumps → soft finger foods over the coming weeks.</li>
+    <li><b>Batch &amp; freeze</b> in ice-cube trays — a week of food in one cook.</li>
+    <li><b>Start with 1–2 teaspoons</b> once a day, mid-morning. Milk still comes first for now.</li>
+  </ul></div>
+
+  <h2>5 · Introduce allergens early &amp; often</h2>
+  <div class="sl-card">
+    <p>The old "wait and delay" advice was <b>wrong</b>. Introducing peanut and egg <b>early</b> (around 6 months, once a couple first foods go well) <b>lowers</b> allergy risk — proven by the LEAP trial.</p>
+    <ul>
+      <li>Thin smooth peanut butter into puree (never a thick spoonful — choking).</li>
+      <li>Well-cooked egg, dairy (yogurt/cheese — not cow's milk as a drink yet), wheat, soy, fish.</li>
+      <li>One allergen at a time, in the <b>morning</b>, so you can watch him all day. Keep offering once tolerated.</li>
+    </ul>
+  </div>
+
+  <h2>6 · First 4 weeks</h2>
+  <div class="sl-card sl-order">
+    <div class="sl-ostep"><div class="sl-onum">1</div><div><div class="sl-ot">Week 1</div><div class="sl-od">One iron food (oat cereal or pureed chicken/beans), thin puree, once/day. Learn the spoon.</div></div></div>
+    <div class="sl-ostep"><div class="sl-onum">2</div><div><div class="sl-ot">Week 2</div><div class="sl-od">Add avocado + one veg (camote/calabaza). New food every 2–3 days.</div></div></div>
+    <div class="sl-ostep"><div class="sl-onum">3</div><div><div class="sl-ot">Week 3</div><div class="sl-od">Add a fruit (banana/pear/mango) + first allergen (thinned peanut, then egg).</div></div></div>
+    <div class="sl-ostep last"><div class="sl-onum">4</div><div><div class="sl-ot">Week 4</div><div class="sl-od">Toward 2 meals/day, more allergens, soft lumps.</div></div></div>
+  </div>
+
+  <h2>7 · Never before age 1 / choking</h2>
+  <div class="sl-flags"><div class="sl-flag red"><div class="sl-ft">The hard no-list</div><ul>
+    <li><b>Honey</b> — botulism risk until 12 months</li>
+    <li><b>Cow's milk as a drink</b> — until 12 months (fine cooked in / as yogurt)</li>
+    <li><b>Added salt &amp; sugar</b></li>
+    <li><b>Choking shapes</b> — whole grapes/cherry tomatoes (quarter them), nuts, popcorn, hard chunks, hot dogs, globs of nut butter</li>
+    <li><b>Unpasteurized</b> cheese/juice</li>
+  </ul></div></div>
+
+  <h2>Start here tonight</h2>
+  <div class="sl-card">
+    <p><b>Sweet-potato + chicken puree</b> (iron-rich):</p>
+    <div class="sl-order">
+      <div class="sl-ostep"><div class="sl-onum">1</div><div><div class="sl-od">Steam ½ peeled sweet potato + 1 small skinless chicken thigh until fork-soft (~15 min).</div></div></div>
+      <div class="sl-ostep"><div class="sl-onum">2</div><div><div class="sl-od">Blend smooth with breastmilk/formula or the steaming water to a thin, drippy puree.</div></div></div>
+      <div class="sl-ostep last"><div class="sl-onum">3</div><div><div class="sl-od">Cool to lukewarm. Milk first, then 1–2 teaspoons. Stop when he turns away. Freeze the rest.</div></div></div>
+    </div>
+  </div>
+
+  <details class="sl-cite">
+    <summary>The research behind this</summary>
+    <ul>
+      <li><b>Start ~6 months, iron first</b> — WHO complementary feeding; AAP / HealthyChildren.org.</li>
+      <li><b>Early allergen introduction</b> lowers risk — LEAP trial (2015) &amp; NIAID 2017 guidelines.</li>
+      <li><b>No honey before 12 months</b> — infant botulism (AAP / CDC).</li>
+      <li><b>Vitamin D 400 IU/day</b> for breastfed babies (AAP).</li>
+    </ul>
+    <p class="sl-cite-note">General guidance for a healthy full-term baby — confirm specifics with Dr. León Magaña.</p>
+  </details>`;
+function renderFood() {
+  const el = $("food-content");
+  if (el) el.innerHTML = foodBannerHTML() + FOOD_BODY;
+}
+
+// ============================================================
 //  11. WIRING — every button via addEventListener (no inline onclick)
 // ============================================================
 $("login-form").addEventListener("submit", handleLogin);
@@ -1358,6 +1792,25 @@ $("ms-save").addEventListener("click", saveMilestone);
 $("edit-save").addEventListener("click", saveEdit);
 
 $("export-btn").addEventListener("click", exportCSV);
+
+// New Leo home + growth wiring
+$("leo-sleep-btn").addEventListener("click", tapSleep);
+$("leo-export-btn").addEventListener("click", exportCSV);
+$("leo-ask-card").addEventListener("click", () => switchTab("ask"));
+$("leo-fix-btn").addEventListener("click", () => {
+  const s = openSleep() || lastEndedSleep();   // fix a mislogged/forgotten sleep time
+  if (s) openEditModal(s);
+});
+$("grow-save").addEventListener("click", saveGrowth);
+
+// "⋯ More" menu — the old screens, kept just in case
+$("more-btn").addEventListener("click", (e) => { e.stopPropagation(); $("more-menu").classList.toggle("hidden"); });
+$("more-menu").querySelectorAll("button").forEach((b) =>
+  b.addEventListener("click", () => { switchTab(b.dataset.tab); $("more-menu").classList.add("hidden"); }));
+document.addEventListener("click", (e) => {
+  if (!$("more-menu").classList.contains("hidden") && !e.target.closest("#more-menu") && e.target.id !== "more-btn")
+    $("more-menu").classList.add("hidden");
+});
 
 // v2: tabs, stats range, insight refresh, chat
 document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));

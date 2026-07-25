@@ -1648,18 +1648,21 @@ function renderGrowCharts() {
   growWChart = buildGrowChart(growWChart, "grow-weight-chart", WHO_WFA_BOYS, true,  growth.filter((g) => g.kind === "weight"), "kg");
   growHChart = buildGrowChart(growHChart, "grow-height-chart", WHO_LFA_BOYS, false, growth.filter((g) => g.kind === "height"), "cm");
 }
+const LEO_RED = "#ff2d55";   // Leo's own points — bright red, easy to spot vs the WHO curves
 function buildGrowChart(inst, canvasId, anchors, hasL, rows, unit) {
   const canvas = $(canvasId);
   if (!canvas) return inst;
-  if (!inst && canvas.offsetParent === null) return inst; // hidden — build when the tab opens
+  if (canvas.offsetParent === null) return inst;   // hidden — (re)build when the tab opens
+  if (inst) { inst.destroy(); inst = null; }        // rebuild fresh so Leo's point never gets stuck hidden
   const leo = rows.map((g) => ({ x: +ageMonthsAt(g.measured_at).toFixed(2), y: g.value })).sort((a, b) => a.x - b.x);
   const data = { datasets: [
-    { label: "P3",  data: whoCurve(anchors, hasL, -1.88079), borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false },
-    { label: "P50", data: whoCurve(anchors, hasL, 0),        borderColor: "#8f99b8", borderWidth: 2, pointRadius: 0, fill: false },
-    { label: "P97", data: whoCurve(anchors, hasL, 1.88079),  borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false },
-    { label: "Leo", data: leo, borderColor: "#e98aa8", backgroundColor: "#e98aa8", borderWidth: 2, pointRadius: 4, showLine: true },
+    { label: "P3",  data: whoCurve(anchors, hasL, -1.88079), borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, order: 3 },
+    { label: "P50", data: whoCurve(anchors, hasL, 0),        borderColor: "#8f99b8", borderWidth: 2, pointRadius: 0, fill: false, order: 2 },
+    { label: "P97", data: whoCurve(anchors, hasL, 1.88079),  borderColor: "#4a5a72", borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, order: 3 },
+    { label: "Leo", data: leo, borderColor: LEO_RED, backgroundColor: LEO_RED,
+      pointBackgroundColor: LEO_RED, pointBorderColor: "#fff", pointBorderWidth: 2,
+      borderWidth: 3, pointRadius: 6, pointHoverRadius: 8, showLine: true, spanGaps: true, order: -1 },
   ] };
-  if (inst) { inst.data = data; inst.update(); return inst; }
   return new Chart(canvas, {
     type: "line", data,
     options: {

@@ -531,7 +531,7 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .grow-stats { display: flex; gap: 10px; margin-top: 14px; }
 .grow-stat { flex: 1; background: var(--bg-card-2); border-radius: 14px; padding: 13px; }
 .grow-stat .v { font-family: "Fraunces", serif; font-size: 22px; font-weight: 600; }
-.grow-stat .p { color: var(--sage); font-size: 13px; font-weight: 600; margin-top: 2px; }
+.grow-stat .p { color: #ff2d55; font-size: 13px; font-weight: 700; margin-top: 2px; }
 .grow-stat .l { color: var(--ink-dim); font-size: 11px; margin-top: 3px; }
 .grow-disc { font-size: 11.5px; color: var(--ink-dim); font-style: italic; text-align: center; margin: 4px 0 10px; }
 

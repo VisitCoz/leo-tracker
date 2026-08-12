@@ -94,6 +94,10 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .wake-card { text-align: center; transition: background .4s, color .4s; }
 .wake-time { font-family: "Fraunces", serif; font-size: var(--t-hero); font-weight: 600; margin: 4px 0; line-height: 1; font-variant-numeric: tabular-nums; }
 .wake-status { margin: 0; font-size: var(--t-body); opacity: .95; }
+/* Seconds stay — they're the sign the app is alive — but small, so the number you
+   read at a glance is "1h 5m" and never the old ambiguous "1:05:12". */
+.hero-sec { font-size: 26px; opacity: .55; margin-left: 5px; letter-spacing: .01em; }
+.hero-sec.solo { font-size: var(--t-hero); opacity: 1; margin-left: 0; }
 /* Every number on this screen gets one plain sentence saying what to do about it. */
 .wake-why { margin: 6px 0 0; font-size: var(--t-note); line-height: 1.5; opacity: .72; }
 

@@ -95,7 +95,15 @@ const plDur = (min) => { const h = Math.floor(min / 60), m = Math.round(min % 60
 // flickering once a second in a dark room is not information, it's a strobe.
 function dur(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
-  return s < 60 ? "just now" : plDur(Math.floor(s / 60));
+  return s < 60 ? `${s}s` : plDur(Math.floor(s / 60));
+}
+// The hero timer keeps its ticking seconds — they're the sign the app is alive —
+// but at a smaller size, so the thing you read at a glance is still "1h 5m" and
+// never the old ambiguous "1:05:12".
+function heroTime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `<span class="hero-sec solo">${s}s</span>`;
+  return `${plDur(Math.floor(s / 60))}<span class="hero-sec">${pad(s % 60)}s</span>`;
 }
 // Format a Date as a local clock time like "2:45 PM".
 function clockTime(d) {
@@ -302,6 +310,50 @@ function wakeState(evts, cfg, t) {
   return out;
 }
 
+// ---- Pauses. A brief wake in the middle of a sleep is not a new sleep. Ending
+// the row and starting another made it "nap #2", which inflated the nap count and
+// the "4th nap" warning. A pause keeps ONE row and records the awake interval, so
+// the count stays right AND the awake minutes don't get counted as sleep.
+//
+// Stored as JSON in `note`, which is unused on sleep rows: {"pauses":[[iso,iso]],"open":iso}
+// No schema change — and the Supabase token is revoked, so that isn't available anyway.
+function sleepPauses(e) {
+  try {
+    const j = JSON.parse(e.note || "{}");
+    return { done: Array.isArray(j.pauses) ? j.pauses : [], open: j.open || null };
+  } catch (err) { return { done: [], open: null }; }
+}
+const isPaused = (e) => !!(e && sleepPauses(e).open);
+
+// Awake milliseconds inside [from, to) for one sleep row.
+function pausedMsIn(e, from, to, nowMs) {
+  const p = sleepPauses(e);
+  let ms = 0;
+  const add = (a, b) => { const s = Math.max(a, from), en = Math.min(b, to); if (en > s) ms += en - s; };
+  for (const [a, b] of p.done) add(new Date(a).getTime(), new Date(b).getTime());
+  if (p.open) add(new Date(p.open).getTime(), nowMs);
+  return ms;
+}
+
+// The contiguous asleep segments of one row — pauses split it. This is what makes
+// "longest unbroken stretch" honest once a night is a single paused row.
+function sleepSegments(e, nowMs) {
+  const start = new Date(e.start_at).getTime();
+  const end = e.end_at ? new Date(e.end_at).getTime() : nowMs;
+  const p = sleepPauses(e);
+  const cuts = p.done.map(([a, b]) => [new Date(a).getTime(), new Date(b).getTime()]);
+  if (p.open) cuts.push([new Date(p.open).getTime(), end]);
+  cuts.sort((x, y) => x[0] - y[0]);
+  const segs = [];
+  let cur = start;
+  for (const [a, b] of cuts) {
+    if (a > cur) segs.push([cur, Math.min(a, end)]);
+    cur = Math.max(cur, b);
+  }
+  if (end > cur) segs.push([cur, end]);
+  return segs.filter(([a, b]) => b > a);
+}
+
 // Sleep clipped to the calendar day of `t`. One implementation for the day-bar,
 // the totals, the alerts and the AI, so they can never print different numbers.
 function sleepDayStats(evts, t) {
@@ -326,34 +378,41 @@ function sleepDayStats(evts, t) {
     const s  = Math.max(rawStart, dayStart);
     const en = Math.min(rawEnd, dayEnd, nowMs);
     if (en <= s) continue;
-    const ms = en - s;
+    // Awake time inside a paused sleep is not sleep.
+    const ms = Math.max(0, (en - s) - pausedMsIn(e, s, en, nowMs));
     // Clock-aware, not just subtype: a resettle at 1am is night sleep whatever the
     // row says. Fixes the nap chips, the pips, isFirstOfDay, isLastOfDay and the
     // day-sleep budget in one place — and retroactively, for rows already saved.
     const kind = isNightRow(e, c, list) ? "night" : "nap";
+    // Round per block, then sum the rounded values — otherwise the parts printed on
+    // the Naps card ("1h 14m" + "4m") don't add up to the total shown above them.
+    const mins = Math.round(ms / 60000);
     sleptMs += ms;
     if (kind === "nap") {
       // Count the nap he is in RIGHT NOW. The old code required end_at, so a
       // running nap read as zero and the "4th nap" warning could never fire.
       napCount++;
-      napMins += ms / 60000;
+      napMins += mins;
       if (e.end_at) lastNapEnd = new Date(Math.max(lastNapEnd ? lastNapEnd.getTime() : 0, rawEnd));
     } else {
-      nightMins += ms / 60000;
+      nightMins += mins;
     }
     blocks.push({
       id: e.id, e, kind, index: kind === "nap" ? napCount : 0,
       left: (s - dayStart) / dayMs * 100,
       width: (en - s) / dayMs * 100,
-      ms, mins: ms / 60000,
-      fullMins: (rawEnd - rawStart) / 60000,   // unclipped — what "a 25-minute nap" means
+      ms, mins,
+      // unclipped asleep minutes — what "a 25-minute nap" means
+      fullMins: Math.round(((rawEnd - rawStart) - pausedMsIn(e, rawStart, rawEnd, nowMs)) / 60000),
       running: !e.end_at,
+      paused: isPaused(e),
+      pauseCount: sleepPauses(e).done.length + (isPaused(e) ? 1 : 0),
       startAt: new Date(rawStart), endAt: e.end_at ? new Date(rawEnd) : null,
     });
   }
   return {
     dayStart, dayMs, nowMs, sleptMs,
-    napCount, napMins: Math.round(napMins), nightMins: Math.round(nightMins),
+    napCount, napMins, nightMins,
     lastNapEnd, blocks,
     naps: blocks.filter((b) => b.kind === "nap"),
   };
@@ -452,16 +511,26 @@ function nightSleepStats(evts, cfg, t) {
   const ns = nightState(list, cfg, T);
   const from = ns.nightStart.getTime();
   const to = Math.min(T.getTime(), ns.morningAt.getTime());
-  let asleepMin = 0, stretches = 0;
+  let asleepMs = 0, longestMs = 0, segCount = 0;
   for (const e of list) {
     if (e.type !== "sleep") continue;
-    const s = Math.max(new Date(e.start_at).getTime(), from);
-    const en = Math.min(e.end_at ? new Date(e.end_at).getTime() : T.getTime(), to);
-    if (en <= s) continue;
-    asleepMin += (en - s) / 60000;
-    stretches++;
+    // Segments, not rows: a night is one row with pauses now, so counting rows
+    // would report one stretch for a night with four wake-ups.
+    for (const [a, b] of sleepSegments(e, T.getTime())) {
+      const s = Math.max(a, from), en = Math.min(b, to);
+      if (en <= s) continue;
+      asleepMs += en - s;
+      longestMs = Math.max(longestMs, en - s);
+      segCount++;
+    }
   }
-  return { asleepMin: Math.round(asleepMin), stretches, wakes: Math.max(0, stretches - 1), ns };
+  return {
+    asleepMin: Math.round(asleepMs / 60000),
+    longestMin: Math.round(longestMs / 60000),
+    stretches: segCount,
+    wakes: Math.max(0, segCount - 1),
+    ns,
+  };
 }
 
 const isNightFeedTime = (d, cfg) => {
@@ -756,7 +825,34 @@ async function startSleep(kind) {
 async function endSleep() {
   const running = openSleep();
   if (!running) return;
-  await sb.from("events").update({ end_at: now().toISOString() }).eq("id", running.id);
+  const p = sleepPauses(running);
+  const fields = { end_at: now().toISOString() };
+  // Ending while paused: close the open pause first, or its awake minutes would
+  // run to the end of the row and swallow the whole sleep.
+  if (p.open) fields.note = JSON.stringify({ pauses: [...p.done, [p.open, now().toISOString()]] });
+  await sb.from("events").update(fields).eq("id", running.id);
+  await loadEvents();
+}
+
+// ---- Pause / resume. "He woke up early and went back down" is the same sleep,
+// not a new one. Ending and restarting made it nap #2 and set off the extra-nap
+// warning; pausing keeps one row, keeps the count right, and stops the awake
+// minutes being counted as sleep.
+async function pauseSleep() {
+  const running = openSleep();
+  if (!running || isPaused(running)) return;
+  const p = sleepPauses(running);
+  await sb.from("events").update({ note: JSON.stringify({ pauses: p.done, open: now().toISOString() }) }).eq("id", running.id);
+  await loadEvents();
+}
+async function resumeSleep() {
+  const running = openSleep();
+  if (!running) return;
+  const p = sleepPauses(running);
+  if (!p.open) return;
+  await sb.from("events")
+    .update({ note: JSON.stringify({ pauses: [...p.done, [p.open, now().toISOString()]] }) })
+    .eq("id", running.id);
   await loadEvents();
 }
 
@@ -2622,7 +2718,7 @@ function renderLeoWake() {
 
   const set = (eyebrow, hero, status, why, zone) => {
     $("leo-wake-eyebrow").textContent = eyebrow;
-    $("leo-wake-time").textContent = hero;
+    $("leo-wake-time").innerHTML = hero;
     $("leo-wake-status").innerHTML = status;
     $("leo-wake-why").textContent = why || "";
     $("leo-wake-why").classList.toggle("hidden", !why);
@@ -2643,7 +2739,7 @@ function renderLeoWake() {
   if (bed && !w.asleep) {
     const mins = Math.round((now() - new Date(bed.start_at)) / 60000);
     set(`Settling · round ${bedtimeRounds(bed)}`,
-        dur(now() - new Date(bed.start_at)),
+        heroTime(now() - new Date(bed.start_at)),
         mins <= GATE_MINS ? `Under ${GATE_MINS} minutes so far` : `Calm first, then down awake.`,
         mins <= GATE_MINS
           ? `Nights under ${GATE_MINS} minutes are what unlock nap training.`
@@ -2654,13 +2750,35 @@ function renderLeoWake() {
     return;
   }
 
+  // ---- PAUSED — he stirred mid-sleep. Same sleep, still open. ---------
+  if (w.asleep && isPaused(w.asleep)) {
+    const p = sleepPauses(w.asleep);
+    const since = new Date(p.open);
+    const nss = nightSleepStats(null, cfg);
+    const night = ns.isNight;
+    track.classList.add("hidden");
+    set(`${night ? "Night waking" : "Nap paused"} · ${clockTime(since)}`,
+        heroTime(now() - since),
+        night ? "Awake in the night — still the same night." : "Awake — still the same nap.",
+        `Tap "Back to sleep" when he's down again. This won't count as a new ${night ? "night" : "nap"}.`,
+        night ? "night" : "amber");
+    if (night) {
+      pair(plDur(nss.asleepMin), "asleep so far tonight",
+           plFmt(hhmmToMin(cfg.night.morningWakeEarliest)), `the day starts, ${plDur(ns.minsToMorning)} away`);
+    } else {
+      pair(plDur(st.napMins), "day sleep today",
+           `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+    }
+    return;
+  }
+
   // ---- NIGHT ---------------------------------------------------------
   if (ns.isNight) {
     track.classList.add("hidden");
     const nss = nightSleepStats(null, cfg);
     if (w.asleep) {
       set(`Tonight · down at ${clockTime(ns.nightStart)}`,
-          dur(now() - new Date(w.asleep.start_at)),
+          heroTime(now() - new Date(w.asleep.start_at)),
           "Asleep for the night.",
           `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
           "night");
@@ -2671,7 +2789,7 @@ function renderLeoWake() {
     if (ns.logged) {
       // The exact state that produced "NAPPING FOR / Wake him by 5:15 PM".
       set(`Night waking · ${w.wokeAt ? clockTime(w.wokeAt) : clockTime(ns.nightStart)}`,
-          w.wokeAt ? dur(now() - w.wokeAt) : "—",
+          w.wokeAt ? heroTime(now() - w.wokeAt) : "—",
           "Awake in the night — this is not a nap.",
           `Keep it dark and quiet. Tap "Back to sleep" when he's down again.`,
           "night");
@@ -2681,7 +2799,7 @@ function renderLeoWake() {
     }
     // In the bedtime window, not down yet.
     set("Bedtime window · open",
-        w.wokeAt ? dur(now() - w.wokeAt) : "—",
+        w.wokeAt ? heroTime(now() - w.wokeAt) : "—",
         `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
         "Calm and a bit later beats fast and too early.",
         "night");
@@ -2694,7 +2812,7 @@ function renderLeoWake() {
   if (w.asleep) {
     const cutoff = hhmmToMin(cfg.naps.lastNapCutoff);
     set(`Napping since ${clockTime(new Date(w.asleep.start_at))}`,
-        dur(now() - new Date(w.asleep.start_at)),
+        heroTime(now() - new Date(w.asleep.start_at)),
         `Wake him by <b>${plFmt(cutoff)}</b>.`,
         "A nap after that steals the tiredness he needs for bedtime.",
         "green");
@@ -2715,7 +2833,7 @@ function renderLeoWake() {
 
   const label = w.isLastOfDay ? "Bedtime window" : w.isFirstOfDay ? "First window" : "Window";
   set("Awake for",
-      dur(now() - w.wokeAt),
+      heroTime(now() - w.wokeAt),
       w.zone === "early"
         ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
         : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`,
@@ -2786,8 +2904,9 @@ function renderSleepActions(w, cfg) {
   // ns.isNight belongs in EVERY signature, not just the "not asleep" one: the same
   // open sleep row reads "He's awake" at 5:55am and "End sleep" at 6:05, and without
   // it in the key the memo would keep the stale label across the boundary.
+  const paused = isPaused(w.asleep);
   const sig = `${ns.isNight}:${ns.logged}:` + (
-    w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
+    w.asleep ? `end:${w.asleep.id}:${paused}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -2804,11 +2923,16 @@ function renderSleepActions(w, cfg) {
   if (bed && !w.asleep) {
     mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
     mk("btn-ghost", "+ Round", () => addBedtimeRound(1));
+  } else if (w.asleep && paused) {
+    // Same sleep, still open. Resume is the big one — going back down is the
+    // common case; ending is what you do once he's actually up.
+    mk("btn-sleep btn-block btn-night", "▶ Back to sleep", () => resumeSleep());
+    mk("btn-ghost btn-block", ns.isNight ? "Up for the day" : "End nap", () => endSleep());
   } else if (ns.isNight) {
     // The word "nap" must never appear between bedtime and morning. At 1am the only
     // thing a parent needs is one big button, and it must write subtype "night".
     if (w.asleep) {
-      mk("btn-sleep btn-block active", "He's awake", () => endSleep());
+      mk("btn-sleep btn-block active", "⏸ He's awake", () => pauseSleep());
     } else if (ns.logged) {
       mk("btn-sleep btn-block btn-night", "😴 Back to sleep", () => startSleep("night"));
     } else {
@@ -2816,7 +2940,8 @@ function renderSleepActions(w, cfg) {
       mk("btn-sleep", "😴 Asleep now", () => startSleep("night"));
     }
   } else if (w.asleep) {
-    mk("btn-sleep btn-block active", "End sleep", () => endSleep());
+    mk("btn-sleep", "⏸ He stirred", () => pauseSleep());
+    mk("btn-ghost", "End nap", () => endSleep());
   } else if (bedtimeNear) {
     mk("btn-sleep", "😴 Start nap", () => startSleep("nap"));
     // Bedtime opens a training session, not a sleep row: the minutes between the

@@ -573,6 +573,72 @@ async function endSleep() {
   await sb.from("events").update({ end_at: now().toISOString() }).eq("id", running.id);
   await loadEvents();
 }
+
+// ---- Bedtime sessions ---------------------------------------
+// The gap between "into the crib" and "asleep" is the number the whole training
+// programme is judged on — Phase 2 (nap conversion) unlocks at ≤15 minutes for
+// 4–5 nights running. Logging only the sleep row can't see that gap, so a bedtime
+// session records it: start_at = into the crib, end_at = asleep, note = rounds.
+// `events.type` has no CHECK constraint and every reader filters by type
+// explicitly, so this needs no schema change.
+const openBedtime = () => events.find((e) => e.type === "bedtime" && !e.end_at);
+const bedtimeRounds = (e) => { const m = /rounds=(\d+)/.exec(e.note || ""); return m ? +m[1] : 0; };
+const isRescue = (e) => /rescue/.test(e.note || "");
+
+async function startBedtimeSession() {
+  if (openBedtime() || openSleep()) return;
+  await sb.from("events").insert({ type: "bedtime", start_at: now().toISOString(), note: "rounds=1" });
+  await loadEvents();
+}
+// A "round" is one full trip up the ladder and back down. Counting them is how
+// you see the burst dying: rounds trending down means it's working.
+async function addBedtimeRound(delta) {
+  const b = openBedtime();
+  if (!b) return;
+  const n = Math.max(1, bedtimeRounds(b) + (delta || 1));
+  await sb.from("events").update({ note: (b.note || "").replace(/rounds=\d+/, `rounds=${n}`) || `rounds=${n}` }).eq("id", b.id);
+  await loadEvents();
+}
+// Closing the session also opens the night sleep, so there's no double entry and
+// the crib-fighting minutes never get counted as sleep.
+async function finishBedtimeSession() {
+  const b = openBedtime();
+  if (!b) return;
+  const t = now().toISOString();
+  await sb.from("events").update({ end_at: t }).eq("id", b.id);
+  if (!openSleep()) await sb.from("events").insert({ type: "sleep", subtype: "night", start_at: t });
+  await loadEvents();
+}
+async function cancelBedtimeSession() {
+  const b = openBedtime();
+  if (!b) return;
+  await sb.from("events").delete().eq("id", b.id);
+  await loadEvents();
+}
+
+// A rescue night is a night the method doesn't apply to — he was in pain, not
+// protesting. It must not break the streak, because punishing a sick night is
+// what makes parents abandon the plan.
+async function toggleRescueNight() {
+  const b = openBedtime() || tonightsBedtime();
+  const t = now().toISOString();
+  if (!b) {
+    await sb.from("events").insert({ type: "bedtime", start_at: t, end_at: t, note: "rounds=0 rescue" });
+  } else {
+    const note = isRescue(b) ? (b.note || "").replace(/\s*rescue/, "") : `${b.note || "rounds=0"} rescue`;
+    await sb.from("events").update({ note }).eq("id", b.id);
+  }
+  await loadEvents();
+}
+
+// The bedtime session belonging to "tonight" — an evening one, or one from after
+// midnight that still belongs to yesterday's night.
+function tonightsBedtime(t) {
+  const T = t || now();
+  const cutoff = new Date(T.getFullYear(), T.getMonth(), T.getDate(), 12, 0).getTime();
+  const from = minOfDay(T) < 12 * 60 ? cutoff - 86400000 : cutoff;
+  return events.find((e) => e.type === "bedtime" && new Date(e.start_at).getTime() >= from) || null;
+}
 // Fallback for the old Home-tab button, which is a single toggle.
 function defaultSleepKind(t) {
   const cfg = cfgNow(), m = minOfDay(t || now());
@@ -904,6 +970,12 @@ function render() {
     renderAgo();
     renderClockNow();
   }
+  // Sleep training: tick ONLY the minute counter. Rebuilding that card would
+  // destroy the "He's asleep" button under a tired thumb.
+  if (tabOpen("sleep")) {
+    const el = $("tr-live-min"), b = openBedtime();
+    if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
+  }
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -1076,7 +1148,7 @@ function pipRow(label, count, low, high, value) {
     `</div>`;
 }
 
-const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨" };
+const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨", bedtime: "🌙" };
 
 function renderLog(listId) {
   const list = $(listId || "log-list");
@@ -1101,6 +1173,12 @@ function renderLog(listId) {
     } else if (e.type === "sleep") {
       title = `Sleep (${e.subtype || "?"})`;
       meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)}` : `${clockTime(start)} – running`;
+    } else if (e.type === "bedtime") {
+      const r = bedtimeRounds(e);
+      title = isRescue(e) ? "Bedtime · rescue night" : `Bedtime settling · ${r} round${r === 1 ? "" : "s"}`;
+      meta = e.end_at
+        ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)} to asleep`
+        : `${clockTime(start)} – settling now`;
     } else if (e.type === "milestone") {
       title = e.note || "Milestone";
     }
@@ -1631,10 +1709,438 @@ const SLEEP_CITE = `
 
 const SLEEP_FOOTER = `<div class="sl-footer"><p class="sl-heart">For Emma &amp; Leo 🤍</p><p>A plan, not a rulebook. Leo leads — we adjust with him, together.</p></div>`;
 
-function renderSleep(){
-  $("sleep-content").innerHTML =
-    sleepBannerHTML() + SLEEP_REASSURE + SLEEP_GATE + SLEEP_BODY +
-    sleepProgressHTML() + SLEEP_FLAGS + SLEEP_CITE + SLEEP_FOOTER;
+// ============================================================
+//  10j. SLEEP TRAINING — the method, live
+// ============================================================
+// Everything below is Mike & Emma's actual programme, worked out night by night
+// from 28 July 2026 onward. It used to live in six separate HTML guides that kept
+// superseding each other. This is the one copy.
+//
+// Deliberately built for 2am: sub-tabs so nothing needs scrolling, the ladder
+// always one tap away, and every number computed from real logged data rather
+// than remembered.
+
+const TRAIN_KEY = "leo_train_view";
+let trainView = (() => { try { return localStorage.getItem(TRAIN_KEY) || "tonight"; } catch (e) { return "tonight"; } })();
+const GATE_MINS = 15;      // bedtime ≤15 min …
+const GATE_NIGHTS = 4;     // … for 4 nights running unlocks Phase 2
+
+// Completed bedtime sessions, newest first.
+function bedtimeHistory(limit) {
+  return events
+    .filter((e) => e.type === "bedtime" && e.end_at)
+    .sort((a, b) => new Date(b.start_at) - new Date(a.start_at))
+    .slice(0, limit || 14)
+    .map((e) => ({
+      e,
+      at: new Date(e.start_at),
+      mins: Math.max(0, Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000)),
+      rounds: bedtimeRounds(e),
+      rescue: isRescue(e),
+    }));
+}
+
+// Consecutive nights under the gate, counting back. Rescue nights are SKIPPED,
+// not counted and not breaking — a night he was in pain says nothing about the
+// method, and breaking the streak over it is how people quit.
+function bedtimeStreak() {
+  let streak = 0;
+  for (const n of bedtimeHistory(30)) {
+    if (n.rescue) continue;
+    if (n.mins <= GATE_MINS) streak++;
+    else break;
+  }
+  return streak;
+}
+const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
+const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
+
+// When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
+// schedule — nobody wakes him to feed.
+function feedGateAt(t) {
+  const T = t || now();
+  const f = events
+    .filter((e) => (e.type === "breast" || e.type === "bottle"))
+    .map((e) => new Date(e.end_at || e.start_at))
+    .filter((d) => d <= T)
+    .sort((a, b) => b - a)[0];
+  if (!f) return null;
+  return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
+}
+
+// ---------- Sub-tab: TONIGHT ----------
+function trainTonightHTML() {
+  const cfg = cfgNow();
+  const st = sleepDayStats();
+  const proj = projectTonight(cfg, st);
+  const b = openBedtime();
+  const gate = feedGateAt();
+  const streak = bedtimeStreak();
+  const nights = trainingNights();
+
+  // Live bedtime session — the only interactive part of the whole tab.
+  let session;
+  if (b) {
+    const mins = Math.round((now() - new Date(b.start_at)) / 60000);
+    const rounds = bedtimeRounds(b);
+    session = `<div class="tr-live">
+      <div class="tr-live-head">In the crib since <b>${clockTime(new Date(b.start_at))}</b></div>
+      <div class="tr-live-num"><span id="tr-live-min">${mins}</span><small>min</small> <span class="tr-live-r">round ${rounds}</span></div>
+      <p class="tr-live-note">${mins <= GATE_MINS
+        ? "Under 15 minutes so far — this is a gate night if he goes down now."
+        : "Over 15 minutes. Still fine — rounds matter more than the clock tonight."}</p>
+      <div class="tr-live-btns">
+        <button id="tr-asleep" class="btn btn-sleep">😴 He's asleep</button>
+        <button id="tr-round" class="btn btn-ghost">+ Another round</button>
+      </div>
+      <button id="tr-cancel" class="leo-fixlink">✕ cancel — he didn't go down</button>
+    </div>`;
+  } else if (openSleep()) {
+    session = `<div class="tr-live done"><div class="tr-live-head">He's down. 🤍</div>
+      <p class="tr-live-note">Any wake from here: check the clock against the feed gate, then run the ladder.</p></div>`;
+  } else {
+    session = `<div class="tr-live">
+      <div class="tr-live-head">Bedtime</div>
+      <p class="tr-live-note">Tap the moment he goes <b>into the crib</b> — not when he falls asleep. The gap between the two is the number this whole plan is judged on.</p>
+      <button id="tr-start" class="btn btn-sleep btn-block">🌙 Into the crib</button>
+    </div>`;
+  }
+
+  const target = proj
+    ? `<b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - 25 * 60000))}</b>`
+    : "log a nap and this fills in";
+
+  return session + `
+  <div class="tr-plan">
+    <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
+    <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
+      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last feed ${clockTime(gate.last)})</span>` : "no feed logged yet"
+    }</span></div>
+    <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
+  </div>
+
+  <div class="tr-shift">
+    <div class="tr-shift-h">Whose wake is it</div>
+    <div class="tr-shift-grid">
+      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake under 3 hours. Ladder only — no boob, no exceptions on a healthy night.</span></div>
+      <div class="tr-shift-c emma"><b>Emma</b><span>Only real feeds, 3+ hours after the last one. Otherwise earplugs — the rest is his.</span></div>
+    </div>
+    <p class="tr-shift-n">He can smell the milk on Emma, so he escalates harder at her for a wake that isn't hunger. Agree the two windows out loud <b>before 7pm</b>. Never renegotiate at 2am in the hallway — review over coffee at 8.</p>
+  </div>
+
+  <div class="tr-cue">
+    <div class="tr-cue-h">Green zone — put him down here</div>
+    <div class="tr-cue-g">
+      <span class="tr-cue-i">Slow blinks</span><span class="tr-cue-i">Heavy, loose body</span><span class="tr-cue-i">Faraway gaze</span>
+    </div>
+    <p class="tr-cue-t"><b>The test:</b> if his eyes crack open when he touches the mattress, you didn't fail — you got it exactly right. <b>Too late</b> = eyes closed 30+ seconds, breathing deep and even. Then the crib gets a sleeping baby, he surfaces, and the panic is the mismatch.</p>
+  </div>
+
+  <div class="sl-gate"><b>The one line:</b> bouncing to <b>calm</b> is always allowed — that's rung 3. Bouncing all the way to <b>sleep</b> is the prop. The bounce is the fire extinguisher, not the bed.</div>`;
+}
+
+// ---------- Sub-tab: LADDER ----------
+const TRAIN_LADDER = `
+  <div class="tr-triage">
+    <div class="tr-triage-h">First, listen. The sound picks the rung.</div>
+    <div class="tr-tr-row calm"><span class="tr-tr-s">Active, babbling, squirming</span><span class="tr-tr-a">Do nothing. Stay out of sight.</span></div>
+    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 1–2 minutes. Hands off.</span></div>
+    <div class="tr-tr-row cry"><span class="tr-tr-s">Real crying, climbing</span><span class="tr-tr-a">Start at rung 2.</span></div>
+    <div class="tr-tr-row scream"><span class="tr-tr-s">Hard screaming, panic</span><span class="tr-tr-a">Go now. Straight to rung 3.</span></div>
+  </div>
+
+  <div class="tr-ladder">
+    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 1–2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power in week 1 and then suddenly works around nights 4–6. That's the signal the crib association has flipped.</em></div></div></div>
+    <div class="tr-rung"><div class="tr-rn">3</div><div><div class="tr-rt">Pick up and calm — fully</div><div class="tr-rd">Held <b>still</b> against your chest, in the dark. Not bouncing, not walking laps. No time limit: fully calm means crying stopped, body loose and heavy, breathing slow. Usually 5–10 boring minutes.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">4</div><div><div class="tr-rt">Back down awake</div><div class="tr-rd">Calm but <b>not asleep</b>. Chupón in, hand on chest a few seconds, then withdraw. He restarts the second he touches the mattress? Normal. Rung 2 first, not straight back to arms.</div></div></div>
+    <div class="tr-rung last"><div class="tr-rn">5</div><div><div class="tr-rt">Repeat, identically</div><div class="tr-rd">The number of rounds isn't the score — <b>sameness</b> is. 5–8 rounds on a night-1 wake is normal. Every identical round teaches him the deal doesn't change.</div></div></div>
+  </div>
+
+  <div class="tr-override">
+    <div class="tr-ov-h">⚠️ The override</div>
+    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, calm him completely. Holding, swaying, chupón, all fine.</p>
+  </div>
+
+  <div class="tr-notcio">
+    <div class="tr-ov-h">This is not leaving him to cry</div>
+    <p>He gets a response <b>every single time</b>, and arms every time he truly needs them. The only thing withheld on an under-3-hour wake is the boob — because that wake is habit, not hunger. Crying through a change with a parent right there leaves no trace; that's exactly what the 5-year follow-up measured.</p>
+    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. If a night is going to collapse, let it collapse completely into a comfort night and restart clean tomorrow.</p>
+  </div>
+
+  <div class="tr-dont">
+    <div class="tr-ov-h">Never</div>
+    <ul>
+      <li><b>Never put a crying baby in the crib.</b> The crib is only ever for a calm baby. Calm first, then down.</li>
+      <li>Never bounce all the way to sleep.</li>
+      <li>Never pick up automatically at every wake — the sound decides.</li>
+      <li>Never sneak away. Same phrase every time: <em>"ya vengo, Leo."</em></li>
+      <li>Never let the boob be the last step before the crib.</li>
+    </ul>
+  </div>`;
+
+// ---------- Sub-tab: FEEDS ----------
+function trainFeedsHTML() {
+  const cfg = cfgNow();
+  const gate = feedGateAt();
+  const fr = feedRatio7d();
+  const g = cfg.night.feedGateMin;
+  return `
+  <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
+    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No feed logged yet"}</div>
+    ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
+      ? `since ${clockTime(gate.opens)}`
+      : `opens ${clockTime(gate.opens)}`}</div>
+    <p class="tr-gate-n">Last feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+      ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
+      : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
+  </div>
+
+  <div class="tr-rule">
+    <div class="tr-rule-h">${plDur(g)} is a <em>minimum gate</em>, not a schedule</div>
+    <p>Nobody wakes him to feed. If he doesn't wake, nothing happens and the window just stays open. Feed windows are <b>ceilings, not appointments</b> — the best version of tonight is one feed, not three.</p>
+  </div>
+
+  <div class="tr-two">
+    <div class="tr-two-c yes"><b>${plDur(g)}+ since a full feed</b><span>Feed him. Dark, boring, no talking, straight back in the crib awake. If he takes it eagerly and drains it, that was real hunger and the rule worked.</span></div>
+    <div class="tr-two-c no"><b>Under ${plDur(g)}</b><span>Ladder. No boob. The tell for a comfort feed: takes 20–30 ml and dozes off — that's a pacifier with extra steps.</span></div>
+  </div>
+
+  <div class="tr-reverse ${fr.flag ? "hot" : ""}">
+    <div class="tr-ov-h">Reverse cycling — the live problem</div>
+    <p><b>${Math.round(fr.nightPct)}%</b> of his feeds over the last 7 days were between 7pm and 6am.${fr.flag ? " That's above the 35% line." : " Under the 35% line."}</p>
+    <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
+    <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
+    <ul>
+      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. At 6 months the day is interesting and he'll skip meals to look at things, then collect at night.</li>
+      <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
+      <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
+      <li>Optional: a dream feed around 10:30pm banks a full feed at a time <em>you</em> choose.</li>
+    </ul>
+    <p class="tr-signal">The signal it's working: a night feed shrinking to a 4-minute snack on its own. That one is becoming droppable. Expect 3–7 days.</p>
+  </div>
+
+  <div class="sl-gate"><b>Night weaning is a separate project.</b> Whether and when to drop night feeds is a weight-and-doctor decision, not a sleep decision — his 150g/week gain is the metric that gates it. You can teach Leo to fall asleep on his own <em>while keeping every feed.</em> Dr. León Magaña has the final word.</div>`;
+}
+
+// ---------- Sub-tab: PROGRESS ----------
+function trainProgressHTML() {
+  const hist = bedtimeHistory(7);
+  const streak = bedtimeStreak();
+  const p = sleepProgress();
+  const unlocked = phase2Unlocked();
+
+  const bars = hist.length
+    ? `<div class="tr-hist">` + hist.slice().reverse().map((n) => {
+        const h = Math.min(100, (n.mins / 45) * 100);
+        const cls = n.rescue ? "rescue" : n.mins <= GATE_MINS ? "good" : "over";
+        return `<span class="tr-hb"><span class="tr-hbar"><span class="tr-hfill ${cls}" style="height:${Math.max(6, h)}%"></span></span>` +
+               `<span class="tr-hnum">${n.rescue ? "–" : n.mins}</span>` +
+               `<span class="tr-hday">${["S","M","T","W","T","F","S"][n.at.getDay()]}</span></span>`;
+      }).join("") + `</div>
+      <p class="tr-hist-n">Minutes from crib to asleep, last ${hist.length} night${hist.length === 1 ? "" : "s"}. Green = under ${GATE_MINS}. Grey = rescue night (doesn't count).</p>`
+    : `<p class="tr-empty">No bedtimes logged yet. Tap <b>Into the crib</b> on the Tonight tab and the trend starts building.</p>`;
+
+  return `
+  <div class="tr-gatebox ${unlocked ? "on" : ""}">
+    <div class="tr-gate-h">${unlocked ? "🎉 Phase 2 unlocked" : "Phase 2 gate"}</div>
+    <div class="tr-pips">${"●".repeat(Math.min(streak, GATE_NIGHTS))}${"○".repeat(Math.max(0, GATE_NIGHTS - streak))}</div>
+    <p class="tr-gate-n">${unlocked
+      ? `Bedtime has been under ${GATE_MINS} minutes ${streak} nights running. The morning nap can move to the crib — see the Method tab.`
+      : `${streak} of ${GATE_NIGHTS} nights under ${GATE_MINS} minutes. Don't start naps yet — just keep counting.`}</p>
+  </div>
+
+  ${bars}
+
+  <div class="tr-signs">
+    <div class="tr-sign good">
+      <div class="tr-ov-h">It's working when…</div>
+      <ul>
+        <li>He does the last bit of falling asleep <b>in the crib</b> — this is the #1 metric</li>
+        <li>Rounds trend down across nights</li>
+        <li>His longest stretch grows${p.longest ? ` <span class="tr-live-r">now ${plDur(Math.round(p.longest / 60000))}</span>` : ""}</li>
+        <li>Crying gets shorter <em>within</em> a night</li>
+        <li>He's a happy baby during the day</li>
+      </ul>
+    </div>
+    <div class="tr-sign warn">
+      <div class="tr-ov-h">Watch out for…</div>
+      <ul>
+        <li>Bedtime getting <b>longer</b> across a whole week</li>
+        <li>The pelota creeping back in — it's retired</li>
+        <li>Calming sessions getting longer instead of shorter (30 seconds, not 5 minutes)</li>
+        <li>Pain-type crying on clean-food nights</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tr-judge">
+    <div class="tr-ov-h">How to judge it</div>
+    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never evaluate before night 5.</p>
+    <p class="tr-notwin"><b>And success at 6 months is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most cycle wakes, eats when he's actually hungry. Seven-to-seven silence is a September conversation, after Dr. León clears night weaning.</p>
+  </div>`;
+}
+
+// ---------- Sub-tab: RESCUE ----------
+function trainRescueHTML() {
+  const b = tonightsBedtime();
+  const marked = b && isRescue(b);
+  return `
+  <div class="tr-vs">
+    <div class="tr-vs-c"><b>Protest</b><span>Calms when you hold him. Settles within minutes in your arms. Restarts when he's put down.</span></div>
+    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 30+ minutes inconsolable in your arms. Arching, legs pulled up.</span></div>
+  </div>
+  <p class="tr-vs-n">That's the whole test. <b>Protest calms when held; pain doesn't.</b> The training rules assume a comfortable baby — the moment he isn't one, the rules are suspended and you just comfort your son. Bounce, boob, chest, whatever works.</p>
+
+  <div class="tr-check">
+    <div class="tr-ov-h">The 10-minute checklist</div>
+    <ol>
+      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time.</li>
+      <li><b>Big burp.</b> A full 3–4 minutes, not 30 seconds. Upright on your shoulder, belly against you, firm pats. Also seated on your forearm, leaning forward.</li>
+      <li><b>Nose.</b> Blocked = he can't settle lying flat. Sterimar, wait a minute, suction only if it's clearly blocking.</li>
+      <li><b>Gums.</b> Finger sweep for a hard ridge or bulge. Drool rash, red cheeks, ear-rubbing.</li>
+      <li><b>Diaper, too hot, too cold.</b></li>
+    </ol>
+  </div>
+
+  <div class="sl-flag red">
+    <div class="sl-ft">Straight to Dr. León Magaña — 987-871-8123</div>
+    <ul>
+      <li>Fever ≥38°C at his age</li>
+      <li>Vomiting</li>
+      <li>Inconsolable past ~1 hour, or through a feed plus 20–30 min of full comfort</li>
+      <li>Arching and pulling legs up, repeatedly</li>
+      <li>Anything that feels off to either of you — trust that</li>
+    </ul>
+  </div>
+
+  <div class="tr-dairy">
+    <div class="tr-ov-h">Check the food first</div>
+    <p>Twice now a bad night has traced straight back to dairy — the lasagna pouch was the clearest. With his cow's-milk protein history, <b>read every label</b>: leche, queso, mantequilla, suero/whey, caseína. New foods at home, in the morning, one at a time. Dairy waits for Dr. León.</p>
+    <p>A repeating <em>food → bad night</em> pattern is data, not noise. Three logged examples turns the appointment from "he sleeps badly sometimes" into something the doctor can actually act on.</p>
+  </div>
+
+  <div class="tr-mark">
+    <p>${marked
+      ? "Tonight is marked as a <b>rescue night</b>. It won't count against the streak."
+      : "If tonight stops being sleep training, say so here. Rescue nights are skipped by the streak, not counted against it."}</p>
+    <button id="tr-rescue" class="btn ${marked ? "btn-sleep active" : "btn-ghost"} btn-block">${marked ? "✓ Marked as a rescue night — undo" : "Mark tonight as a rescue night"}</button>
+  </div>`;
+}
+
+// ---------- Sub-tab: METHOD ----------
+function trainMethodHTML() {
+  const cfg = cfgNow();
+  const unlocked = phase2Unlocked();
+  const streak = bedtimeStreak();
+  return sleepBannerHTML() + `
+  <h2>The one idea behind all of it</h2>
+  <div class="sl-card">
+    <p>Around 4 months a baby's sleep matures into <span class="sl-big">cycles</span> of about 50–60 minutes, and Leo briefly surfaces between them. <b>Everyone does this, adults too</b> — we just roll over and drift back without remembering.</p>
+    <p>The whole goal is helping Leo do the same. However he falls asleep at bedtime is the reference his brain checks at every cycle transition all night. If that's the bottle or our arms, he needs us to recreate it at 2am. Falling asleep <em>by himself at bedtime</em> is what lets him resettle by himself at 2am — so <b>bedtime does about 80% of the work</b>, and you can't contradict it later in the night.</p>
+  </div>
+
+  <h2>Our bedtime, in order</h2>
+  <div class="sl-flow">
+    <span class="sl-chip">Feed (awake, lights on)</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Pyjama</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Massage</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">White noise</span><span class="sl-arrow">→</span>
+    <span class="sl-chip key">Crib, drowsy but awake</span>
+  </div>
+  <div class="sl-card">
+    <p>20–30 minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. The bath is optional and doesn't have to be in the chain at all; if he comes out of it wired, move it 1½ hours earlier or to the morning.</p>
+    <p>The routine doesn't <em>make</em> him sleepy — it announces sleep to a brain that's already ready. Work backwards from his window: last nap ended ${
+      sleepDayStats().lastNapEnd ? `<b>${clockTime(sleepDayStats().lastNapEnd)}</b>, so lights-out lands around <b>${clockTime(new Date(sleepDayStats().lastNapEnd.getTime() + cfg.ww.lastOfDay * 60000))}</b>` : "— log a nap and this fills in"
+    }. Start too early and you get a well-massaged, wide-awake baby doing four ladder rounds.</p>
+  </div>
+
+  <h2>The three phases</h2>
+  <p class="sl-lead">Nights first. Naps convert in days once nights are solid — reverse the order and both fall apart.</p>
+  <div class="sl-phase${!unlocked ? " tr-here" : ""}">
+    <div class="sl-ph-head"><span>Phase 1 · Nights only</span><span class="sl-when">${!unlocked ? "◀ we are here" : "done"}</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li><b>Change nothing about the day.</b> Bounce, white noise, stroller naps — all of it, guilt-free.</li>
+        <li>Protected daytime sleep is what <em>funds</em> the night project. An overtired baby cannot learn to settle at 7pm.</li>
+        <li>Bedtime: the routine above, into the crib drowsy but awake, ladder as needed.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="sl-phase${unlocked ? " tr-here" : ""}">
+    <div class="sl-ph-head"><span>Phase 2 · Convert the morning nap only</span><span class="sl-when">${unlocked ? "◀ unlocked" : `${streak}/${GATE_NIGHTS} nights`}</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li><b>Gate:</b> bedtime ≤${GATE_MINS} minutes for ${GATE_NIGHTS}–5 nights running.</li>
+        <li>Nap 1 only — it carries the highest sleep pressure of the day, so it has the best odds. Naps 2 and 3 stay on the stroller, possibly for months.</li>
+        <li>Timing: ~2½ hours after morning wake. Up at 7:00 → wind-down 9:20, crib 9:30.</li>
+        <li>Mini version of bedtime, 2–3 minutes: dark room, white noise, brief cuddle. Same signals, compressed.</li>
+        <li><b>The 30-minute rescue rule:</b> not asleep after ~30 minutes of calm trying → get him up, keep him happy 15–20 min, then rescue the nap on the stroller. No guilt, no second attempt that day.</li>
+      </ul>
+      <p class="sl-note"><em>That rescue rule is what makes it safe to try. At bedtime, sleep pressure guarantees he'll eventually sleep. At nap time there's no guarantee — and a missed morning nap wrecks the whole day and that night. The nap experiment is never allowed to cost actual sleep. Expect the first crib naps to be short, 30–40 min. Length comes after settling does.</em></p>
+      <p class="sl-note"><b>Free head start:</b> run nap 1 in the bedroom now — dark, white noise, then bounce as usual. You're pre-loading the location so that when you convert, only one variable changes.</p>
+    </div>
+  </div>
+  <div class="sl-phase">
+    <div class="sl-ph-head"><span>Phase 3 · Nap 2, then done</span><span class="sl-when">later</span></div>
+    <div class="sl-ph-body"><ul><li>The last cat-nap of the day can live on the stroller basically forever — it dies on its own when he drops to two naps.</li></ul></div>
+  </div>
+
+  <h2>Mornings</h2>
+  <div class="tr-two">
+    <div class="tr-two-c no"><b>Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — still night</b><span>Room dark, voices off, night rules, feed gate applies. Even with a grumpy baby. If crying at 5:15 gets lights and morning, you've taught him the night ends at 5:15 — and he'll deliver that daily.</span></div>
+    <div class="tr-two-c yes"><b>After ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — morning</b><span>Don't fight it. Leave, wait a beat, come back with the dramatic wake-up: lights on, curtains open, big voice, <em>"¡buenos días, Leo!"</em>, out of the dark room for the bottle. The contrast is doing real chronobiology.</span></div>
+  </div>
+  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. If you want mornings at 6:30, bedtime moves later, 15 minutes every two nights — never adjusted on a bad night.</p>
+
+  <h2>What the weeks look like</h2>
+  <div class="tr-week">
+    <div class="tr-wk"><b>Nights 1–3</b><span>Worse or equal. This is the toll booth. Night 3 is often an extinction burst — he protests harder one last time to test whether the old system comes back.</span></div>
+    <div class="tr-wk"><b>Nights 4–7</b><span>Bedtime starts dropping toward 15 minutes. Rung 2 suddenly starts working. Some cycle-transition wakes simply stop happening.</span></div>
+    <div class="tr-wk"><b>Week 2–3</b><span>Bedtime consistently short, nap conversion unlocks.</span></div>
+    <div class="tr-wk"><b>Week 3–4</b><span>The new normal: asleep ~7:15, two honest feeds, up ~6:15. Two feeds is completely fine at his age and weight.</span></div>
+  </div>
+
+  <div class="sl-together">
+    <div class="sl-together-k">The thing that makes or breaks it</div>
+    <p>You both run the <b>identical</b> script. If one of you lays him down awake and the other feeds him fully to sleep, Leo gets a slot machine — and slot machines are the single hardest thing to stop pulling. Agree before bedtime, not during it.</p>
+  </div>
+
+  ${SLEEP_REASSURE + SLEEP_CITE + SLEEP_FOOTER}`;
+}
+
+const TRAIN_TABS = [
+  ["tonight", "Tonight"], ["ladder", "The ladder"], ["feeds", "Feeds"],
+  ["progress", "Progress"], ["rescue", "Rescue"], ["method", "Method"],
+];
+
+function renderSleep() {
+  const host = $("sleep-content");
+  if (!host) return;
+  const body =
+    trainView === "ladder"   ? TRAIN_LADDER :
+    trainView === "feeds"    ? trainFeedsHTML() :
+    trainView === "progress" ? trainProgressHTML() :
+    trainView === "rescue"   ? trainRescueHTML() :
+    trainView === "method"   ? trainMethodHTML() : trainTonightHTML();
+
+  host.innerHTML =
+    `<nav class="pl-subtabs tr-subtabs" id="tr-subtabs">` +
+    TRAIN_TABS.map(([k, label]) => `<button data-v="${k}"${k === trainView ? ' class="on"' : ""}>${label}</button>`).join("") +
+    `</nav><div class="tr-body">${body}</div>`;
+
+  $("tr-subtabs").addEventListener("click", (e) => {
+    if (!e.target.dataset.v) return;
+    trainView = e.target.dataset.v;
+    try { localStorage.setItem(TRAIN_KEY, trainView); } catch (err) {}
+    renderSleep();
+  });
+  const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+  on("tr-start",  startBedtimeSession);
+  on("tr-round",  () => addBedtimeRound(1));
+  on("tr-asleep", finishBedtimeSession);
+  on("tr-cancel", cancelBedtimeSession);
+  on("tr-rescue", toggleRescueNight);
 }
 
 // ============================================================
@@ -1855,6 +2361,20 @@ function renderLeoWake() {
   const track = $("leo-ww-track");
   renderSleepActions(w, cfg);
 
+  // Settling in the crib — the state you're actually in at 8pm.
+  const bed = openBedtime();
+  if (bed && !w.asleep) {
+    const mins = Math.round((now() - new Date(bed.start_at)) / 60000);
+    card.className = `card wake-card zone-${mins <= GATE_MINS ? "green" : "amber"}`;
+    $("leo-wake-eyebrow").textContent = `Settling · round ${bedtimeRounds(bed)}`;
+    $("leo-wake-time").textContent = dur(now() - new Date(bed.start_at));
+    $("leo-wake-status").innerHTML = mins <= GATE_MINS
+      ? `Under ${GATE_MINS} min so far — this counts toward the Phase 2 streak`
+      : `Rounds matter more than the clock. Calm first, then down awake.`;
+    track.classList.add("hidden");
+    return;
+  }
+
   if (w.asleep) {
     const night = w.asleep.subtype === "night";
     card.className = "card wake-card zone-green";
@@ -1899,7 +2419,8 @@ function renderSleepActions(w, cfg) {
   if (!host) return;
   // Bedtime only becomes a plausible choice within ~3h of the earliest bedtime.
   const bedtimeNear = minOfDay(now()) >= hhmmToMin(cfg.night.bedtimeEarliest) - 180;
-  const sig = w.asleep ? `end:${w.asleep.id}` : `start:${bedtimeNear}`;
+  const bed = openBedtime();
+  const sig = w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`;
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -1912,11 +2433,16 @@ function renderSleepActions(w, cfg) {
     host.appendChild(b);
     return b;
   };
-  if (w.asleep) {
+  if (bed && !w.asleep) {
+    mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
+    mk("btn-ghost", "+ Round", () => addBedtimeRound(1));
+  } else if (w.asleep) {
     mk("btn-sleep btn-block active", "End sleep", () => endSleep());
   } else if (bedtimeNear) {
     mk("btn-sleep", "😴 Start nap", () => startSleep("nap"));
-    mk("btn-ghost", "🌙 Start bedtime", () => startSleep("night"));
+    // Bedtime opens a training session, not a sleep row: the minutes between the
+    // crib and actually asleep are the number the whole plan is scored on.
+    mk("btn-ghost", "🌙 Into the crib", () => startBedtimeSession());
   } else {
     mk("btn-sleep btn-block", "😴 Start nap", () => startSleep("nap"));
   }

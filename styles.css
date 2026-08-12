@@ -703,6 +703,37 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .tr-fixday { color: var(--ink); }
 .tr-signal { color: var(--sage); }
 
+/* Night feeds by size */
+.tr-nf { background: var(--bg-card); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+.tr-nf-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.tr-nf-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: 10px; font-size: 13px; border-left: 3px solid; background: var(--bg-card-2); }
+.tr-nf-row.full   { border-color: var(--orange); }
+.tr-nf-row.partial{ border-color: var(--amber); }
+.tr-nf-row.snack  { border-color: var(--green); }
+.tr-nf-t { font-variant-numeric: tabular-nums; min-width: 62px; }
+.tr-nf-s { font-weight: 600; }
+.tr-nf-k { color: var(--ink-dim); margin-left: auto; }
+.tr-drop { background: var(--green); color: #0f2318; border-radius: 20px; padding: 2px 9px; font-size: 11px; font-weight: 700; }
+.tr-nf-v { font-size: 13px; line-height: 1.6; margin: 0 0 12px; color: var(--ink-dim); }
+.tr-nf-v b { color: var(--ink); }
+.tr-nf-v.hunger b { color: var(--amber); }
+.tr-nf-v.drop b { color: var(--green); }
+.tr-nf-strip { display: flex; gap: 8px; margin-bottom: 8px; }
+.tr-nf-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.tr-nf-dot { width: 13px; height: 13px; border-radius: 50%; display: inline-block; vertical-align: middle; }
+.tr-nf-dot.full { background: var(--orange); }
+.tr-nf-dot.partial { background: var(--amber); }
+.tr-nf-dot.snack { background: var(--green); }
+.tr-nf-n { font-size: 12px; font-variant-numeric: tabular-nums; }
+.tr-nf-d { font-size: 10px; color: var(--ink-dim); }
+.tr-nf-leg { font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; margin: 0 0 12px; }
+.tr-nf-leg .tr-nf-dot { width: 9px; height: 9px; margin: 0 3px 0 8px; }
+.tr-nf-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.tr-nf-split > div { background: var(--bg-card-2); border-radius: 12px; padding: 12px; }
+.tr-nf-big { display: block; font-family: "Fraunces", serif; font-size: 24px; color: var(--sage); }
+.tr-nf-lab { display: block; font-size: 11.5px; color: var(--ink-dim); line-height: 1.45; margin-top: 3px; }
+
 /* Progress */
 .tr-gatebox { background: var(--bg-card); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; text-align: center; }
 .tr-gatebox.on { background: linear-gradient(160deg, #25402f, #1f3327); border: 1px solid #2e5440; }

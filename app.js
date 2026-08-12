@@ -123,14 +123,14 @@ const AGE_DEFAULTS = [
     ww:    { min: 60,  target: 75,  max: 90,  firstOfDay: 60,  lastOfDay: 90 },
     naps:  { minCount: 4, maxCount: 6, totalDayMin: 240, totalDayMax: 300, lastNapCutoff: "17:30", minUsefulNap: 20 },
     night: { bedtimeEarliest: "19:00", bedtimeLatest: "21:30", morningWakeEarliest: "06:00", expectedNightSleep: [540, 660], feedGateMin: 120 },
-    feeds: { perDayMin: 8, perDayMax: 12 },
+    feeds: { perDayMin: 8, perDayMax: 12, fullMl: 90, snackMl: 40, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [840, 1020] } },
 
   { maxMonth: 5,  band: "4–5 mo",
     ww:    { min: 105, target: 120, max: 135, firstOfDay: 105, lastOfDay: 150 },
     naps:  { minCount: 3, maxCount: 4, totalDayMin: 180, totalDayMax: 240, lastNapCutoff: "17:00", minUsefulNap: 25 },
     night: { bedtimeEarliest: "18:30", bedtimeLatest: "20:30", morningWakeEarliest: "06:00", expectedNightSleep: [600, 720], feedGateMin: 180 },
-    feeds: { perDayMin: 6, perDayMax: 8 },
+    feeds: { perDayMin: 6, perDayMax: 8, fullMl: 120, snackMl: 50, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [840, 960] } },
 
   // Leo is here as of Aug 2026. Wake windows 2.5–3h, 2–3 naps, 2.5–3.5h day sleep,
@@ -138,29 +138,32 @@ const AGE_DEFAULTS = [
   { maxMonth: 8,  band: "6–8 mo",
     ww:    { min: 150, target: 165, max: 180, firstOfDay: 150, lastOfDay: 180 },
     naps:  { minCount: 2, maxCount: 3, totalDayMin: 150, totalDayMax: 210, lastNapCutoff: "17:15", minUsefulNap: 30 },
+    // fullMl 150 = his normal bottle is 180. snackMl 60 covers the "takes 20–30ml
+    // and dozes off" comfort feed. snackMin 5 is the 4-minute snack that signals a
+    // night feed has become droppable.
     night: { bedtimeEarliest: "19:00", bedtimeLatest: "20:45", morningWakeEarliest: "06:00", expectedNightSleep: [600, 720], feedGateMin: 180 },
-    feeds: { perDayMin: 5, perDayMax: 6 },
+    feeds: { perDayMin: 5, perDayMax: 6, fullMl: 150, snackMl: 60, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [780, 900] } },
 
   { maxMonth: 10, band: "9–10 mo",
     ww:    { min: 180, target: 195, max: 210, firstOfDay: 165, lastOfDay: 210 },
     naps:  { minCount: 2, maxCount: 2, totalDayMin: 120, totalDayMax: 180, lastNapCutoff: "16:30", minUsefulNap: 45 },
     night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:30", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
-    feeds: { perDayMin: 4, perDayMax: 5 },
+    feeds: { perDayMin: 4, perDayMax: 5, fullMl: 180, snackMl: 60, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [720, 870] } },
 
   { maxMonth: 12, band: "11–12 mo",
     ww:    { min: 195, target: 210, max: 225, firstOfDay: 180, lastOfDay: 225 },
     naps:  { minCount: 2, maxCount: 2, totalDayMin: 120, totalDayMax: 165, lastNapCutoff: "16:00", minUsefulNap: 45 },
     night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:15", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
-    feeds: { perDayMin: 4, perDayMax: 5 },
+    feeds: { perDayMin: 4, perDayMax: 5, fullMl: 180, snackMl: 60, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [720, 840] } },
 
   { maxMonth: 999, band: "13 mo+",
     ww:    { min: 240, target: 270, max: 300, firstOfDay: 210, lastOfDay: 300 },
     naps:  { minCount: 1, maxCount: 2, totalDayMin: 90, totalDayMax: 150, lastNapCutoff: "15:30", minUsefulNap: 45 },
     night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:00", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
-    feeds: { perDayMin: 3, perDayMax: 4 },
+    feeds: { perDayMin: 3, perDayMax: 4, fullMl: 200, snackMl: 60, fullMin: 10, snackMin: 5 },
     totals:{ healthy24h: [660, 840] } },
 ];
 
@@ -346,6 +349,98 @@ function sleepDayStats(evts, t) {
     lastNapEnd, blocks,
     naps: blocks.filter((b) => b.kind === "nap"),
   };
+}
+
+// ---- Feed size. The reverse-cycling question is not "how many feeds at night"
+// but "how BIG are they" — a 180ml bottle and a 20ml comfort suck are the same
+// row in the log and completely different facts. Bottles carry ml, breast feeds
+// carry duration; neither converts honestly into the other, so they're never
+// added together — each is judged against its own threshold.
+function classifyFeed(e, cfg) {
+  const c = cfg || cfgNow();
+  if (e.type === "bottle") {
+    const ml = e.amount_ml || 0;
+    return { unit: "ml", size: ml, label: `${ml} ml`,
+             kind: ml >= c.feeds.fullMl ? "full" : ml <= c.feeds.snackMl ? "snack" : "partial" };
+  }
+  if (!e.end_at) return { unit: "min", size: null, label: "running", kind: "partial" };
+  const mins = Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000);
+  return { unit: "min", size: mins, label: `${mins} min`,
+           kind: mins >= c.feeds.fullMin ? "full" : mins <= c.feeds.snackMin ? "snack" : "partial" };
+}
+
+// A night feed is one taken after he went DOWN for the night — the bedtime
+// bottle is the last feed of the day, not a night feed. Counting it as one made
+// the reverse-cycling figure read 83% when the honest answer was 45%, which is
+// the difference between "fix the days" and "nothing to fix".
+function nightWindowFor(d, cfg) {
+  const c = cfg || cfgNow();
+  const dayStart = d.getTime();
+  const morning = dayStart + 24 * 3600000 + hhmmToMin(c.night.morningWakeEarliest) * 60000;
+  // Prefer the actual logged bedtime; fall back to the latest sensible bedtime.
+  const nightSleep = events
+    .filter((e) => e.type === "sleep" && e.subtype === "night")
+    .map((e) => new Date(e.start_at).getTime())
+    .filter((s) => s >= dayStart + 16 * 3600000 && s < morning)
+    .sort((a, b) => a - b)[0];
+  return { from: nightSleep || dayStart + hhmmToMin(c.night.bedtimeLatest) * 60000, to: morning };
+}
+
+const isNightFeedTime = (d, cfg) => {
+  const c = cfg || cfgNow();
+  const t = d.getTime();
+  for (let i = 0; i <= 8; i++) {
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+    const w = nightWindowFor(day, c);
+    if (t >= w.from && t < w.to) return true;
+  }
+  return false;
+};
+
+// Feeds grouped by NIGHT (bedtime through the following morning), newest first.
+function nightFeedHistory(nights, cfg) {
+  const c = cfg || cfgNow();
+  const T = now();
+  const out = [];
+  for (let i = 0; i < (nights || 7); i++) {
+    const d = new Date(T.getFullYear(), T.getMonth(), T.getDate() - i);
+    const { from, to } = nightWindowFor(d, c);
+    if (from > T.getTime()) continue;
+    const feeds = events
+      .filter((e) => (e.type === "breast" || e.type === "bottle"))
+      .filter((e) => { const at = new Date(e.start_at).getTime(); return at >= from && at < to; })
+      .sort((a, b) => new Date(a.start_at) - new Date(b.start_at))
+      .map((e) => ({ e, at: new Date(e.start_at), ...classifyFeed(e, c) }));
+    out.push({
+      date: d, feeds,
+      full: feeds.filter((f) => f.kind === "full").length,
+      snack: feeds.filter((f) => f.kind === "snack").length,
+      ml: feeds.filter((f) => f.unit === "ml").reduce((a, f) => a + (f.size || 0), 0),
+      breastMin: feeds.filter((f) => f.unit === "min").reduce((a, f) => a + (f.size || 0), 0),
+    });
+  }
+  return out;
+}
+
+// Milk taken by day vs by night, kept in native units. This is the number that
+// actually moves when reverse cycling breaks — feed COUNT can stay flat while
+// the volume shifts back into the day.
+function milkSplit7d(cfg) {
+  const c = cfg || cfgNow();
+  const T = now(), from = T.getTime() - 7 * 86400000;
+  let dayMl = 0, nightMl = 0, dayMin = 0, nightMin = 0;
+  for (const e of events) {
+    if (e.type !== "breast" && e.type !== "bottle") continue;
+    const at = new Date(e.start_at);
+    if (at.getTime() < from || at > T) continue;
+    const f = classifyFeed(e, c);
+    const night = isNightFeedTime(at, c);
+    if (f.unit === "ml") { if (night) nightMl += f.size || 0; else dayMl += f.size || 0; }
+    else { if (night) nightMin += f.size || 0; else dayMin += f.size || 0; }
+  }
+  const mlPct  = (dayMl + nightMl)   ? (nightMl  / (dayMl + nightMl))   * 100 : null;
+  const minPct = (dayMin + nightMin) ? (nightMin / (dayMin + nightMin)) * 100 : null;
+  return { dayMl, nightMl, dayMin, nightMin, mlPct, minPct };
 }
 
 // Total sleep over a ROLLING 24 hours. The honest comparison against the 13–15h
@@ -1906,6 +2001,8 @@ function trainFeedsHTML() {
     <div class="tr-two-c no"><b>Under ${plDur(g)}</b><span>Ladder. No boob. The tell for a comfort feed: takes 20–30 ml and dozes off — that's a pacifier with extra steps.</span></div>
   </div>
 
+  ${nightFeedHTML(cfg)}
+
   <div class="tr-reverse ${fr.flag ? "hot" : ""}">
     <div class="tr-ov-h">Reverse cycling — the live problem</div>
     <p><b>${Math.round(fr.nightPct)}%</b> of his feeds over the last 7 days were between 7pm and 6am.${fr.flag ? " That's above the 35% line." : " Under the 35% line."}</p>
@@ -1921,6 +2018,58 @@ function trainFeedsHTML() {
   </div>
 
   <div class="sl-gate"><b>Night weaning is a separate project.</b> Whether and when to drop night feeds is a weight-and-doctor decision, not a sleep decision — his 150g/week gain is the metric that gates it. You can teach Leo to fall asleep on his own <em>while keeping every feed.</em> Dr. León Magaña has the final word.</div>`;
+}
+
+// ---- Night feeds, by size. The question that decides what to do next is not
+// how many he took but how big they were: full feeds mean real calories have
+// moved into the night (fix the days), a shrinking feed means that one has
+// become habit and is ready to drop.
+function nightFeedHTML(cfg) {
+  const c = cfg || cfgNow();
+  const hist = nightFeedHistory(7, c);
+  const split = milkSplit7d(c);
+  const last = hist.find((n) => n.feeds.length);
+
+  if (!last) return `<div class="tr-nf"><div class="tr-ov-h">Night feeds</div>
+    <p class="tr-empty">No night feeds logged yet. Log bottles with their ml and time the breast feeds, and the size trend builds here.</p></div>`;
+
+  const rows = last.feeds.map((f) => {
+    const tag = f.kind === "full" ? "full feed" : f.kind === "snack" ? "snack" : "part feed";
+    const drop = f.kind === "snack" ? `<span class="tr-drop">ready to drop</span>` : "";
+    return `<div class="tr-nf-row ${f.kind}"><span class="tr-nf-t">${clockTime(f.at)}</span>` +
+           `<span class="tr-nf-s">${f.label}</span><span class="tr-nf-k">${tag}</span>${drop}</div>`;
+  }).join("");
+
+  // The trend that matters: is the biggest night feed getting smaller?
+  const sized = hist.filter((n) => n.feeds.length).slice(0, 5).reverse();
+  const strip = sized.map((n) => {
+    const worst = n.feeds.reduce((a, f) => (f.kind === "full" ? 2 : f.kind === "partial" ? 1 : 0) >
+      (a ? (a.kind === "full" ? 2 : a.kind === "partial" ? 1 : 0) : -1) ? f : a, null);
+    const k = worst ? worst.kind : "snack";
+    return `<span class="tr-nf-col"><span class="tr-nf-dot ${k}"></span>` +
+           `<span class="tr-nf-n">${n.feeds.length}</span>` +
+           `<span class="tr-nf-d">${["S","M","T","W","T","F","S"][n.date.getDay()]}</span></span>`;
+  }).join("");
+
+  const anyFull = last.full > 0;
+  const verdict = anyFull
+    ? `<p class="tr-nf-v hunger"><b>Still real hunger.</b> ${last.full} full feed${last.full === 1 ? "" : "s"} last night — those calories have genuinely moved into the night. Don't withhold them; move the calories back into the day and the night demand collapses on its own, usually in 3–7 days.</p>`
+    : last.snack
+      ? `<p class="tr-nf-v drop"><b>That's the signal.</b> ${last.snack} of last night's feeds ${last.snack === 1 ? "was a snack" : "were snacks"} — sucking to sleep, not eating. A feed that shrinks on its own is becoming droppable: next time that wake comes inside the gate, it gets the ladder.</p>`
+      : `<p class="tr-nf-v">Part feeds — in between. Watch whether they shrink or grow over the next few nights.</p>`;
+
+  return `<div class="tr-nf">
+    <div class="tr-ov-h">Last night's feeds</div>
+    <div class="tr-nf-list">${rows}</div>
+    ${verdict}
+    ${strip ? `<div class="tr-nf-strip">${strip}</div>
+    <p class="tr-nf-leg"><i class="tr-nf-dot full"></i>full <i class="tr-nf-dot partial"></i>part <i class="tr-nf-dot snack"></i>snack · biggest feed of each night, number = how many</p>` : ""}
+    <div class="tr-nf-split">
+      <div><span class="tr-nf-big">${split.mlPct != null ? Math.round(split.mlPct) + "%" : "—"}</span><span class="tr-nf-lab">of bottled milk taken at night<br><span class="tr-dim">${split.nightMl} of ${split.nightMl + split.dayMl} ml</span></span></div>
+      <div><span class="tr-nf-big">${split.minPct != null ? Math.round(split.minPct) + "%" : "—"}</span><span class="tr-nf-lab">of breast minutes at night<br><span class="tr-dim">${split.nightMin} of ${split.nightMin + split.dayMin} min</span></span></div>
+    </div>
+    <p class="tr-nf-leg">Bottles and breast are counted separately on purpose — there's no honest way to convert minutes into millilitres, and a made-up conversion would hide exactly the shift you're watching for.</p>
+  </div>`;
 }
 
 // ---------- Sub-tab: PROGRESS ----------
@@ -2637,8 +2786,8 @@ function feedRatio7d(t) {
       const at = new Date(ev.start_at).getTime();
       if (at < s || at >= e) continue;
       total++;
-      const m = minOfDay(new Date(at));
-      if (m >= 19 * 60 || m < 6 * 60) night++;      // 7pm–6am
+      // Same definition the Training tab uses: after he went down, not after 7pm.
+      if (isNightFeedTime(new Date(at))) night++;
     }
     days.push({ d, night, total, pct: total ? (night / total) * 100 : 0 });
   }
@@ -2746,9 +2895,13 @@ const SETTINGS_FIELDS = [
     { key: "morningWakeEarliest", label: "Morning starts at", type: "time" },
     { key: "feedGateMin", label: "Typical feed spacing", type: "min" },
   ]},
-  { section: "feeds", title: "Feeds", help: "Only used to predict the next feed.", fields: [
+  { section: "feeds", title: "Feeds", help: "Counts predict the next feed. The sizes below decide whether a night feed is real hunger or a habit that's ready to drop.", fields: [
     { key: "perDayMin", label: "Fewest per day", type: "count" },
     { key: "perDayMax", label: "Most per day", type: "count" },
+    { key: "fullMl",   label: "Full bottle, from (ml)", type: "count" },
+    { key: "snackMl",  label: "Snack bottle, up to (ml)", type: "count" },
+    { key: "fullMin",  label: "Full breast feed, from (min)", type: "count" },
+    { key: "snackMin", label: "Snack breast feed, up to (min)", type: "count" },
   ]},
 ];
 

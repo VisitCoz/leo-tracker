@@ -82,8 +82,39 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .zone-green  { background: linear-gradient(160deg, #25402f, #1f3327); color: #d8f2e3; }
 .zone-amber  { background: linear-gradient(160deg, #4a3c1f, #3a2f1a); color: #f6e6bf; }
 .zone-orange { background: linear-gradient(160deg, #4d3320, #3c281a); color: #f6d8bf; }
-.zone-red    { background: linear-gradient(160deg, #4d2424, #3a1c1c); color: #f6cccc; animation: pulse 1.4s ease-in-out infinite; }
+.zone-red    { background: linear-gradient(160deg, #4d2424, #3a1c1c); color: #f6cccc; }
+/* "Too early to be tired" and "put him down now" are opposite instructions, so
+   early gets its own quiet state instead of being folded into green. */
+.zone-early  { background: linear-gradient(160deg, #2f2236, #261a2c); color: var(--ink-dim); }
+/* Only the big headline pulses. A pulsing banner at 3am is cruel. */
+.wake-card.zone-red { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.18); } }
+
+/* ---------- Wake-window progress track (under the headline) ---------- */
+.ww-track { position: relative; height: 6px; border-radius: 999px; background: rgba(0,0,0,.28); margin: 12px 0 14px; }
+.ww-fill  { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: currentColor; opacity: .75; transition: width .4s ease; }
+.ww-band  { position: absolute; top: -3px; bottom: -3px; border-radius: 6px;
+  border: 1px dashed rgba(255,255,255,.5); background: rgba(255,255,255,.07); }
+.leo-sleep-actions { display: flex; gap: 8px; }
+.leo-sleep-actions .btn { flex: 1; }
+
+/* ---------- Alerts ---------- */
+.leo-alerts:not(:empty) { margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+.alert { position: relative; border-radius: 14px; padding: 12px 38px 12px 14px; }
+.alert-title { font-family: "Fraunces", serif; font-size: 15px; margin-bottom: 3px; }
+.alert-text  { font-size: 12.5px; line-height: 1.5; }
+.alert.tappable { cursor: pointer; }
+.alert-urgent { background: linear-gradient(160deg, #4d2424, #3a1c1c); border: 1px solid #5c2e2e; color: #f6cccc; }
+.alert-urgent .alert-title { color: #f0a0a0; }
+.alert-warn   { background: linear-gradient(160deg, #4a3c1f, #3a2f1a); border: 1px solid #5c4a26; color: #f6e6bf; }
+.alert-warn .alert-title { color: var(--amber); }
+.alert-info   { background: var(--bg-card-2); border-left: 3px solid var(--sage); border-radius: 0; color: var(--ink-dim); }
+.alert-info .alert-title { color: var(--ink); }
+.alert-x {
+  position: absolute; top: 6px; right: 6px; width: 30px; height: 30px;
+  background: none; border: 0; color: inherit; opacity: .55; font-size: 14px; cursor: pointer;
+}
+.alert-x:active { opacity: 1; }
 
 /* ---------- Live banner ---------- */
 .live-banner {
@@ -479,9 +510,35 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
   display: flex; align-items: center; justify-content: center; overflow: hidden;
   font-size: 10.5px; font-weight: 600; white-space: nowrap;
 }
-.leo-blk.night { background: linear-gradient(180deg, #7f9fd6, #5e79ad); color: rgba(255,255,255,.95); }
-.leo-blk.nap   { background: linear-gradient(180deg, var(--sage), var(--sage-deep)); color: #173226; }
-.leo-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--pink); z-index: 3; }
+.leo-blk.night { background: linear-gradient(180deg, #7f9fd6, #5e79ad); color: rgba(255,255,255,.95); z-index: 3; }
+.leo-blk.nap   { background: linear-gradient(180deg, var(--sage), var(--sage-deep)); color: #173226; z-index: 3; }
+.leo-blk.running { box-shadow: 0 0 0 1.5px var(--pink); }
+
+/* Everything past the last-nap cutoff is dimmed and hatched. A nap in there is the
+   single most reliable way to wreck bedtime, so the bar says so without words. */
+.db-cutoff-fill {
+  position: absolute; right: 0; top: 0; bottom: 0; z-index: 1;
+  background-color: rgba(27,19,32,.5);
+  background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.05) 0 5px, transparent 5px 10px);
+}
+.db-cutoff-mark { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--amber); z-index: 4; }
+.db-cutoff-mark::after {
+  content: attr(data-t); position: absolute; bottom: 2px; left: 3px;
+  font-size: 8.5px; font-weight: 700; color: var(--amber); white-space: nowrap;
+}
+/* Target bedtime window */
+.db-bedwin {
+  position: absolute; top: 0; bottom: 0; z-index: 1;
+  background: rgba(127,159,214,.16);
+  border-left: 1px dashed rgba(127,159,214,.5); border-right: 1px dashed rgba(127,159,214,.5);
+}
+/* Where the next sleep is predicted to land */
+.db-proj {
+  position: absolute; top: 6px; bottom: 6px; border-radius: 7px; z-index: 2;
+  border: 1px dashed var(--sage-deep);
+  background: linear-gradient(90deg, rgba(143,192,169,.26), rgba(143,192,169,.07));
+}
+.leo-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--pink); z-index: 5; }
 .leo-now::after {
   content: "now"; position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
   background: var(--pink); color: #2a0f1c; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 5px;
@@ -492,6 +549,24 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .leo-lg.night { background: #7f9fd6; }
 .leo-lg.nap { background: var(--sage); }
 .leo-lg.now { background: var(--pink); }
+.leo-lg.proj { background: rgba(143,192,169,.25); border: 1px dashed var(--sage-deep); }
+.leo-lg.bed { background: rgba(127,159,214,.35); border: 1px dashed rgba(127,159,214,.7); }
+.leo-lg.cut { background: var(--amber); width: 3px; border-radius: 1px; }
+.leo-db-legend { flex-wrap: wrap; gap: 6px 14px; }
+
+/* Nap chips carry the text. At 375px a 45-minute nap is 10px wide inside the
+   bar — no label was ever going to fit in there. */
+.db-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+.db-chip {
+  background: var(--bg-card-2); border-radius: 30px; padding: 5px 10px;
+  font-size: 11px; color: #cbbcc8; white-space: nowrap;
+}
+.db-chip.on { box-shadow: 0 0 0 1px var(--pink); color: var(--ink); }
+.db-chip.short { color: var(--amber); }
+.db-chip.muted { color: var(--ink-dim); opacity: .8; }
+.db-pips { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--ink-dim); }
+.db-pips .pips { letter-spacing: 2px; font-size: 14px; }
+.db-pips-lab { line-height: 1.4; }
 
 /* ---- Gauge ---- */
 .leo-gauge-bar { position: relative; height: 16px; border-radius: 8px; background: #3a2c42; overflow: hidden; }
@@ -504,8 +579,48 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 }
 .leo-gauge-num { font-family: "Fraunces", serif; font-size: 24px; font-weight: 600; margin-bottom: 10px; }
 .leo-gauge-num small { font-size: 13px; color: var(--ink-dim); font-weight: 500; }
+.leo-gauge-fill.over { background: linear-gradient(90deg, var(--amber), var(--orange)); }
 .leo-gauge-cap { margin-top: 10px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.45; }
 .leo-gauge-cap b { color: var(--sage); }
+.leo-24h { display: block; margin-top: 4px; color: #8f8090; }
+
+/* Tonight's projection — a projection, not a target. */
+.leo-proj { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3a2c42; }
+.leo-proj-lab { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 3px; }
+.leo-proj-val { font-size: 13.5px; color: var(--ink-dim); }
+.leo-proj-val b { color: var(--ink); }
+.leo-prov { font-size: 12px; color: var(--ink-dim) !important; text-align: right; max-width: 62%; line-height: 1.35; }
+
+/* ---- Night patterns (7-day strips) ---- */
+.nm-lab { font-size: 12px; color: var(--ink-dim); margin: 4px 0 8px; }
+.nm-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: middle; }
+.nm-key.fed { background: var(--pink); }
+.nm-key.unfed { background: #5e79ad; }
+.nm-row { display: flex; gap: 6px; align-items: flex-end; margin-bottom: 14px; }
+.nm-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.nm-bar { width: 100%; height: 46px; background: var(--bg-card-2); border-radius: 5px; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+.nm-fill { display: block; width: 100%; background: var(--sage-deep); }
+.nm-fill.hot { background: var(--amber); }
+.nm-fill.fed { background: var(--pink); }
+.nm-fill.unfed { background: #5e79ad; }
+.nm-day { font-size: 10px; color: var(--ink-dim); }
+.nm-note { font-size: 12px; color: var(--amber); line-height: 1.5; margin: -6px 0 14px; }
+
+/* ---- Settings ---- */
+.set-band { font-size: 13.5px; color: var(--ink-dim); line-height: 1.5; margin: 0 0 8px; }
+.set-band b { color: var(--sage); }
+.set-note, .set-ref { font-size: 12px; color: var(--ink-dim); line-height: 1.5; margin: 0 0 8px; }
+.set-ref b { color: var(--ink); }
+.set-help { font-size: 12.5px; color: var(--ink-dim); line-height: 1.45; margin: -4px 0 12px; }
+.set-grid { display: flex; flex-direction: column; gap: 4px; }
+.set-row { display: grid; grid-template-columns: 1fr 96px; gap: 0 10px; align-items: center; }
+.set-lab { font-size: 14px; }
+.set-inp { width: 100%; margin: 0; }
+.set-hint { grid-column: 1; font-size: 11px; color: var(--ink-dim); }
+.set-row.custom .set-lab::after {
+  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pink); margin-left: 6px; vertical-align: middle;
+}
 
 /* ---- Tiles (2-up) + log hint ---- */
 .leo-tiles { grid-template-columns: 1fr 1fr; }

@@ -27,6 +27,37 @@ with Leo. Bottom nav: **Leo · Growth · Sleep · Food · Ask**.
 Run `schema-growth.sql` in Supabase → SQL Editor (creates the `growth` table). Until then the
 Growth tab shows a friendly "run the SQL" note instead of erroring.
 
+### One-time setup for Sleep settings
+Run `schema-settings.sql` in Supabase → SQL Editor (creates `settings` + `alert_sent`). Until
+then the app falls back to the built-in age defaults and `wake-watch` reports `configMissing`.
+
+### The sleep numbers live in exactly one place
+`AGE_DEFAULTS` in `app.js`, section **0b. SLEEP MODEL**. They are picked by Leo's age on every
+read, so the band advances by itself on his monthly birthday — no deploy. The resolved config is
+written to `settings.sleep_model`, which is what `wake-watch` reads and what `ask-leo` is sent.
+
+**Do not add a second copy.** There were six once — `app.js`, the Planner's own age table,
+`wake-watch`, the `ask-leo` prompt, `spec.md` — and they drifted apart until the app was telling
+us to put a 6-month-old down on 3-month-old timings. If you need the numbers somewhere new, read
+`cfgNow()` or the `settings` row.
+
+Every number is overridable in **⋯ More → ⚙️ Sleep settings**, and the home screen prints which
+age band it is using right next to the numbers it produced, so a wrong setting can't hide.
+
+### Testing the alerts
+There is no test runner. The alerts are all about time of day, so `leoDebug` is how you check them:
+
+```js
+leoDebug.fakeDay("06:10 wake, 08:00-08:45 nap, 11:30-12:50 nap, 16:40- nap")
+leoDebug.at("17:25")     // travel to 5:25pm
+leoDebug.alerts()        // → late-nap, key latenap:<id>
+leoDebug.state()         // zone, window, nap count, rolling 24h
+leoDebug.clear()         // back to the real clock (reload drops the fake data)
+```
+
+For the push side: `curl "https://<ref>.functions.supabase.co/wake-watch?dry=1"` evaluates
+everything, sends nothing, writes nothing, and returns the config it actually used.
+
 ---
 
 ## The stack (and what each piece is)

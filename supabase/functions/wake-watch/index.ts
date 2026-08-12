@@ -193,7 +193,19 @@ async function currentWake() {
 // Only alerts that pass both tests get a push: the parent plausibly isn't looking
 // at the phone, AND there's something time-boxed to do about it. Everything else
 // stays on screen. A 2am buzz about a 7-day feed pattern is hostile.
+// Deliberately a simplified copy of the app's nightState() — different runtime, no
+// shared module, no build step. Clock-only is enough here because it's used purely
+// to SUPPRESS, so erring toward "it's night" is the safe direction.
+// The real rule lives in app.js §0c.
+function isNightNow(cfg: any, tz: string) {
+  const m = localParts(tz).minOfDay;
+  return m >= hhmmToMin(cfg.night.bedtimeEarliest) || m < hhmmToMin(cfg.night.morningWakeEarliest);
+}
+
 async function evaluatePushAlerts(cfg: any, tz: string, w: any, todayDate: string) {
+  // Nothing clock-driven may push between bedtime and morning. This is what sent
+  // "Day sleep is full — 3h 30m" at 5am while the baby was asleep.
+  if (isNightNow(cfg, tz)) return [];
   const nowMin = localParts(tz).minOfDay;
   const alerts: any[] = [];
 
@@ -237,9 +249,13 @@ async function evaluatePushAlerts(cfg: any, tz: string, w: any, todayDate: strin
 }
 
 // ---- Elapsed-time check-ins. No clock involved, so these still run when stale.
-async function wakeSnapshot(cfg: any, w: any, dry: boolean) {
+async function wakeSnapshot(cfg: any, w: any, dry: boolean, tz: string) {
   if (w.asleep) return { skip: "asleep" };
   if (!w.last) return { skip: "no sleep logged yet" };
+  // Wake windows do not apply at night. Without this, one night waking that nobody
+  // logged back down produces "Leo's been awake 2h 30m" at 04:13 — and again every
+  // 15 minutes until morning.
+  if (isNightNow(cfg, tz)) return { skip: "night" };
   const start = cfg.ww.min;                       // first ping when the window OPENS
   if (w.awakeMin < start) return { skip: "window not open yet", awakeMin: w.awakeMin, opensAt: start };
 
@@ -270,7 +286,7 @@ Deno.serve(async (req) => {
     const w = await currentWake();
 
     const live = dry ? { skipped: "dry run" } : await liveTimer();
-    const wake = await wakeSnapshot(cfg, w, dry);
+    const wake = await wakeSnapshot(cfg, w, dry, tz);
 
     // Clock-based alerts are only trustworthy if the config matches his real age.
     let alerts: any[] = [];

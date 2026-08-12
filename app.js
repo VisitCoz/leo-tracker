@@ -84,16 +84,20 @@ function mmss(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${pad(s % 60)}`;
 }
-// Format minutes as a friendly H:MM string (used for color-zone math / finished spans).
-function clockMins(mins) {
-  const h = Math.floor(mins / 60), m = Math.floor(mins % 60);
-  return h > 0 ? `${h}:${pad(m)}` : `0:${pad(m)}`;
-}
-// Live stopwatch: M:SS under an hour, H:MM:SS over — ticks every second.
+// clockMins() was an 11th duplicate formatter with the same M:SS ambiguity as the
+// old dur() — it rendered a 33-minute nap as "0:33", including in activitySummary,
+// which is the text the AI reads. Gone; everything uses plDur.
+// THE duration format. "2h 15m" / "45m". Lives here, next to the other formatters,
+// so nothing depends on definition order.
+const plDur = (min) => { const h = Math.floor(min / 60), m = Math.round(min % 60); return h ? `${h}h${m ? " " + m + "m" : ""}` : `${m}m`; };
+
+// Every elapsed time on screen. It used to render M:SS under an hour, so a 43-minute
+// nap showed as "43:12" — indistinguishable from 43 hours 12, on the biggest number
+// in the app, ticking seconds at 3am. Words only now, and no seconds: a 68px digit
+// flickering once a second in a dark room is not information, it's a strobe.
 function dur(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  return s < 60 ? "just now" : plDur(Math.floor(s / 60));
 }
 // Format a Date as a local clock time like "2:45 PM".
 function clockTime(d) {
@@ -274,7 +278,9 @@ function wakeState(evts, cfg, t) {
   const spread = Math.max(0, c.ww.max - c.ww.min);
   // The first window of the morning is the shortest, the one before bed the longest.
   out.isFirstOfDay = st.napCount === 0 && (last.subtype === "night" || minOfDay(new Date(last.end_at)) < hhmmToMin(c.night.morningWakeEarliest) + 180);
-  out.isLastOfDay  = st.napCount >= c.naps.maxCount || minOfDay(T) >= hhmmToMin(c.naps.lastNapCutoff);
+  // There is no "bedtime window" during the night — he's already down.
+  out.isLastOfDay  = !nightState(list, c, T).isNight &&
+    (st.napCount >= c.naps.maxCount || minOfDay(T) >= hhmmToMin(c.naps.lastNapCutoff));
   if (out.isLastOfDay)       { out.windowMin = Math.max(0, c.ww.lastOfDay - spread); out.windowMax = c.ww.lastOfDay; }
   else if (out.isFirstOfDay) { out.windowMin = c.ww.firstOfDay; out.windowMax = c.ww.firstOfDay + spread; }
   out.windowTarget = Math.min(Math.max(c.ww.target, out.windowMin), out.windowMax);
@@ -303,6 +309,7 @@ function wakeState(evts, cfg, t) {
 function sleepDayStats(evts, t) {
   const T = t || now();
   const list = evts || events;
+  const c = cfgNow();
   const dayStart = new Date(T.getFullYear(), T.getMonth(), T.getDate()).getTime();
   const dayMs = 86400000, dayEnd = dayStart + dayMs, nowMs = T.getTime();
 
@@ -322,7 +329,10 @@ function sleepDayStats(evts, t) {
     const en = Math.min(rawEnd, dayEnd, nowMs);
     if (en <= s) continue;
     const ms = en - s;
-    const kind = e.subtype === "night" ? "night" : "nap";
+    // Clock-aware, not just subtype: a resettle at 1am is night sleep whatever the
+    // row says. Fixes the nap chips, the pips, isFirstOfDay, isLastOfDay and the
+    // day-sleep budget in one place — and retroactively, for rows already saved.
+    const kind = isNightRow(e, c, list) ? "night" : "nap";
     sleptMs += ms;
     if (kind === "nap") {
       // Count the nap he is in RIGHT NOW. The old code required end_at, so a
@@ -373,17 +383,87 @@ function classifyFeed(e, cfg) {
 // bottle is the last feed of the day, not a night feed. Counting it as one made
 // the reverse-cycling figure read 83% when the honest answer was 45%, which is
 // the difference between "fix the days" and "nothing to fix".
-function nightWindowFor(d, cfg) {
+// `fallbackKey` is why this takes a parameter instead of being two functions:
+// for FEEDS the window must start late (bedtimeLatest) so the bedtime bottle isn't
+// counted as a night feed. For the SCREEN it must start early (bedtimeEarliest) so
+// that 7:30pm already reads as night. Same window, two thresholds.
+let _nwCache = new Map();
+function nightWindowFor(d, cfg, fallbackKey) {
   const c = cfg || cfgNow();
   const dayStart = d.getTime();
+  const key = `${dayStart}|${fallbackKey || "bedtimeLatest"}|${settingsRev}|${events.length}`;
+  const hit = _nwCache.get(key);
+  if (hit) return hit;
+
   const morning = dayStart + 24 * 3600000 + hhmmToMin(c.night.morningWakeEarliest) * 60000;
-  // Prefer the actual logged bedtime; fall back to the latest sensible bedtime.
+  // Prefer the actual logged bedtime; fall back to the configured one.
+  // NB: scans raw `subtype`, never isNightRow() — otherwise a mislogged 1am "nap"
+  // could anchor its own night and the recursion would never terminate.
   const nightSleep = events
     .filter((e) => e.type === "sleep" && e.subtype === "night")
     .map((e) => new Date(e.start_at).getTime())
     .filter((s) => s >= dayStart + 16 * 3600000 && s < morning)
     .sort((a, b) => a - b)[0];
-  return { from: nightSleep || dayStart + hhmmToMin(c.night.bedtimeLatest) * 60000, to: morning };
+  const out = {
+    from: nightSleep || dayStart + hhmmToMin(c.night[fallbackKey || "bedtimeLatest"]) * 60000,
+    to: morning,
+    logged: !!nightSleep,
+  };
+  if (_nwCache.size > 64) _nwCache.clear();
+  _nwCache.set(key, out);
+  return out;
+}
+
+// ---- Is it night RIGHT NOW, and which night is it? -------------------
+// At 01:43 Emma was shown a "Start nap" button and the app filed a night waking as
+// nap #1 of the day, because the one branch that decides this used a bare
+// `minOfDay() >= bedtimeEarliest - 180` — an unwrapped 0–1439 scalar, false for a
+// third of the clock. Everything time-of-day now goes through here.
+function nightState(evts, cfg, t) {
+  const T = t || now();
+  const c = cfg || cfgNow();
+  // Before noon we're still inside the night that began YESTERDAY evening.
+  // Same pivot tonightsBedtime() uses.
+  const anchorDate = minOfDay(T) < 720
+    ? new Date(T.getFullYear(), T.getMonth(), T.getDate() - 1)
+    : new Date(T.getFullYear(), T.getMonth(), T.getDate());
+  const w = nightWindowFor(anchorDate, c, "bedtimeEarliest");
+  const isNight = T.getTime() >= w.from && T.getTime() < w.to;
+  return {
+    isNight, logged: w.logged, anchorDate,
+    nightStart: new Date(w.from), morningAt: new Date(w.to),
+    minsIn: Math.max(0, Math.round((T.getTime() - w.from) / 60000)),
+    minsToMorning: Math.max(0, Math.round((w.to - T.getTime()) / 60000)),
+  };
+}
+
+// ONE rule, stated once: inside the night window the clock wins; outside it the
+// stored subtype wins. This is applied at READ time, which means every row already
+// mislabelled in Supabase heals itself — no migration, no UPDATE against history.
+function isNightRow(e, cfg, evts) {
+  if (e.subtype === "night") return true;
+  return nightState(evts, cfg, new Date(e.start_at)).isNight;
+}
+
+// The night analogue of sleepDayStats(). Needed because that one clips to the
+// calendar day, which is useless across midnight — it's why the old summary line
+// could say "0m asleep so far today · asleep now for 7:30:12" in one sentence.
+function nightSleepStats(evts, cfg, t) {
+  const T = t || now();
+  const list = evts || events;
+  const ns = nightState(list, cfg, T);
+  const from = ns.nightStart.getTime();
+  const to = Math.min(T.getTime(), ns.morningAt.getTime());
+  let asleepMin = 0, stretches = 0;
+  for (const e of list) {
+    if (e.type !== "sleep") continue;
+    const s = Math.max(new Date(e.start_at).getTime(), from);
+    const en = Math.min(e.end_at ? new Date(e.end_at).getTime() : T.getTime(), to);
+    if (en <= s) continue;
+    asleepMin += (en - s) / 60000;
+    stretches++;
+  }
+  return { asleepMin: Math.round(asleepMin), stretches, wakes: Math.max(0, stretches - 1), ns };
 }
 
 const isNightFeedTime = (d, cfg) => {
@@ -747,10 +827,9 @@ function tonightsBedtime(t) {
   const from = minOfDay(T) < 12 * 60 ? cutoff - 86400000 : cutoff;
   return events.find((e) => e.type === "bedtime" && new Date(e.start_at).getTime() >= from) || null;
 }
-// Fallback for the old Home-tab button, which is a single toggle.
+// Used by the old Home-tab toggle, and now by anything that needs a default.
 function defaultSleepKind(t) {
-  const cfg = cfgNow(), m = minOfDay(t || now());
-  return (m >= hhmmToMin(cfg.night.bedtimeEarliest) || m < hhmmToMin(cfg.night.morningWakeEarliest)) ? "night" : "nap";
+  return nightState(null, null, t).isNight ? "night" : "nap";
 }
 async function tapSleep() {
   if (openSleep()) await endSleep();
@@ -876,6 +955,10 @@ async function saveEdit() {
 // That is the test suite. There isn't another one.
 
 const SEV_RANK = { urgent: 0, warn: 1, info: 2 };
+// The only alerts allowed to appear between bedtime and morning. feed-gate is kept
+// deliberately: "last night feed 11:58 PM · 1h 45m ago" is exactly what you want
+// to know at 1:43am.
+const NIGHT_OK = new Set(["feed-gate", "early-wake", "undertired-bedtime"]);
 const ALERT_DISMISS_KEY = "leo_alert_dismissed_v1";
 const SEEN_MONTH_KEY = "leo_seen_month";
 
@@ -910,6 +993,7 @@ function evaluateAlerts(evts, cfg, t) {
   const nowMin = minOfDay(T);
   const cutoffMin = hhmmToMin(c.naps.lastNapCutoff);
   const morningMin = hhmmToMin(c.night.morningWakeEarliest);
+  const ns = nightState(list, c, T);
   const out = [];
 
   // 🔴 Put down before he was tired. The most common cause of a long bedtime.
@@ -948,10 +1032,9 @@ function evaluateAlerts(evts, cfg, t) {
 
   // 🟡 Bedtime window is open and he's ready.
   const bedLo = hhmmToMin(c.night.bedtimeEarliest), bedHi = hhmmToMin(c.night.bedtimeLatest);
-  const nightStartedToday = list.some((e) =>
-    e.type === "sleep" && e.subtype === "night" &&
-    sameDay(new Date(e.start_at), T) && minOfDay(new Date(e.start_at)) >= bedLo - 90);
-  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !nightStartedToday) out.push({
+  // ns.logged already means "he's gone down for this night" — the old sameDay()
+  // test couldn't see a night that started before midnight.
+  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !ns.logged) out.push({
     id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
     title: `Bedtime window open`,
     body: `Crib between ${clockTime(w.opensAt)} and ${clockTime(w.closesAt)}. Start the routine now — calm and a bit later beats fast and too early.`,
@@ -974,11 +1057,11 @@ function evaluateAlerts(evts, cfg, t) {
 
   // 🔵 Night feed spacing — INFORMATION, not a gate. Whether Leo needs a night feed
   // is a weight-and-pediatrician question; this app doesn't get a vote on it.
-  if (nowMin >= 19 * 60 || nowMin < morningMin) {
+  if (ns.isNight) {
     const lastNight = list
       .filter((e) => e.type === "breast" || e.type === "bottle")
       .map((e) => new Date(e.end_at || e.start_at))
-      .filter((d) => d <= T && (T - d) <= 12 * 3600000 && (minOfDay(d) >= 19 * 60 || minOfDay(d) < morningMin))
+      .filter((d) => d <= T && (T - d) <= 12 * 3600000 && isNightFeedTime(d, c))
       .sort((a, b) => b - a)[0];
     if (lastNight) out.push({
       id: "feed-gate", sev: "info", key: `feedgate:${lastNight.getTime()}`, push: false,
@@ -988,7 +1071,7 @@ function evaluateAlerts(evts, cfg, t) {
   }
 
   // 🔵 Up before morning.
-  if (!w.asleep && w.last && w.last.subtype === "night" && w.last.end_at) {
+  if (!w.asleep && w.last && w.last.end_at && isNightRow(w.last, c, list)) {
     const endAt = new Date(w.last.end_at);
     const endM = minOfDay(endAt);
     if (endM >= 270 && endM < morningMin && (T - endAt) < 2 * 3600000) out.push({
@@ -1010,7 +1093,14 @@ function evaluateAlerts(evts, cfg, t) {
     });
   }
 
-  return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev]);
+  // ---- The night invariant. At night: nothing pushes, nothing is urgent-red, and
+  // only these three may appear at all. Without this the day-cap alert PUSHED
+  // "Day sleep is full — 3h 30m" at around 5am, while the baby was still asleep.
+  // A filter rather than per-alert guards, so alerts added later inherit it.
+  return out
+    .filter((a) => !ns.isNight || NIGHT_OK.has(a.id))
+    .map((a) => (ns.isNight ? { ...a, push: false, sev: a.sev === "urgent" ? "warn" : a.sev } : a))
+    .sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev]);
 }
 
 // ---- Rendering. Never called from render(): a dismiss button rebuilt every second
@@ -1023,7 +1113,9 @@ function renderAlerts(force) {
   const host = $("leo-alerts");
   if (!host) return;
   const dis = dismissedMap();
-  const live = evaluateAlerts().filter((a) => !dis[a.key]).slice(0, 3);
+  const atNight = nightState().isNight;
+  // One banner at night. Three at 3am is a wall of text nobody reads.
+  const live = evaluateAlerts().filter((a) => !dis[a.key]).slice(0, atNight ? 1 : 3);
   const sig = live.map((a) => a.key).join("|");
   if (!force && sig === _alertSig) return;
   _alertSig = sig;
@@ -1048,8 +1140,11 @@ function renderAlerts(force) {
 
   // The audible alarm used to fire from the old wake card at a flat 90 minutes.
   // It now rings once when a genuinely urgent alert first appears.
+  // fireAlarm() vibrates and beeps at 880Hz. Never in a dark bedroom — the night
+  // filter should already have downgraded everything, but this is audible, so it
+  // gets its own lock.
   const urgent = new Set(live.filter((a) => a.sev === "urgent").map((a) => a.key));
-  for (const k of urgent) if (!_lastUrgent.has(k)) { fireAlarm(); break; }
+  if (!atNight) for (const k of urgent) if (!_lastUrgent.has(k)) { fireAlarm(); break; }
   _lastUrgent = urgent;
 }
 
@@ -1144,7 +1239,7 @@ function renderSinceFeed() {
   const f = lastFeed();
   if (!f) { $("since-feed").textContent = "—"; return; }
   const mins = Math.floor((now() - new Date(f.end_at || f.start_at)) / 60000);
-  $("since-feed").textContent = mins < 1 ? "just now" : `${clockMins(mins)} ago`;
+  $("since-feed").textContent = mins < 1 ? "just now" : `${plDur(mins)} ago`;
 }
 
 // Predicted next feed from his last feed + the age-appropriate interval.
@@ -1280,12 +1375,12 @@ function renderLog(listId) {
       title = `Bottle · ${e.amount_ml || 0} ml`;
     } else if (e.type === "sleep") {
       title = `Sleep (${e.subtype || "?"})`;
-      meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)}` : `${clockTime(start)} – running`;
+      meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${plDur(Math.round(span / 60000))}` : `${clockTime(start)} – running`;
     } else if (e.type === "bedtime") {
       const r = bedtimeRounds(e);
       title = isRescue(e) ? "Bedtime · rescue night" : `Bedtime settling · ${r} round${r === 1 ? "" : "s"}`;
       meta = e.end_at
-        ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)} to asleep`
+        ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${plDur(Math.round(span / 60000))} to asleep`
         : `${clockTime(start)} – settling now`;
     } else if (e.type === "milestone") {
       title = e.note || "Milestone";
@@ -1445,7 +1540,7 @@ const WHY = [
 // Planner helpers (pl-prefixed so they never collide with the tracker's dur/fmt/etc.)
 const plToMin = (s) => { const [h,m]=s.split(":").map(Number); return h*60+m; };
 const plFmt = (min) => { min=((min%1440)+1440)%1440; let h=Math.floor(min/60),m=min%60; const ap=h>=12?"PM":"AM"; h=h%12||12; return `${h}:${pad(m)} ${ap}`; };
-const plDur = (min) => { const h=Math.floor(min/60),m=min%60; return h?`${h}h${m?" "+m+"m":""}`:`${m}m`; };
+// plDur moved up to section 0 with the other formatters.
 const plIcon = (k) => ({wake:"☀️",feed:"🍼",nap:"💤",bed:"🌙"}[k]||"•");
 
 // Age in whole weeks off the app's BIRTH constant.
@@ -2314,14 +2409,14 @@ function activitySummary() {
     const t = clockTime(new Date(e.start_at));
     if (e.type === "breast") return `${t} Breast ${e.subtype === "left" ? "L" : "R"} (${e.end_at ? mmss(new Date(e.end_at) - new Date(e.start_at)) : "ongoing"})`;
     if (e.type === "bottle") return `${t} Bottle ${e.amount_ml || 0}ml`;
-    if (e.type === "sleep") return `${t} Sleep ${e.subtype || "?"} (${e.end_at ? clockMins((new Date(e.end_at) - new Date(e.start_at)) / 60000) : "ongoing"})`;
+    if (e.type === "sleep") return `${t} Sleep ${e.subtype || "?"} (${e.end_at ? plDur(Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000)) : "ongoing"})`;
     if (e.type === "milestone") return `${t} Milestone: ${e.note || ""}`;
     return `${t} ${e.type}`;
   });
   const sleeping = openSleep();
   let status;
   if (sleeping) status = "Right now: asleep.";
-  else { const last = lastEndedSleep(); status = last ? `Right now: awake ${clockMins((now() - new Date(last.end_at)) / 60000)} since the last nap ended.` : "No sleep logged yet today."; }
+  else { const last = lastEndedSleep(); status = last ? `Right now: awake ${plDur(Math.round((now() - new Date(last.end_at)) / 60000))} since the last sleep ended.` : "No sleep logged yet today."; }
   return (lines.length ? lines.join("\n") + "\n" : "") + status;
 }
 
@@ -2579,10 +2674,14 @@ let _sleepActionsSig = null;
 function renderSleepActions(w, cfg) {
   const host = $("leo-sleep-actions");
   if (!host) return;
-  // Bedtime only becomes a plausible choice within ~3h of the earliest bedtime.
-  const bedtimeNear = minOfDay(now()) >= hhmmToMin(cfg.night.bedtimeEarliest) - 180;
+  const ns = nightState(null, cfg);
+  // Bedtime becomes a plausible choice within ~3h of the earliest bedtime.
+  // NB: this deliberately does NOT decide what "night" means — nightState does.
+  // The old code used it for both, and got a third of the clock wrong.
+  const bedtimeNear = !ns.isNight && minOfDay(now()) >= hhmmToMin(cfg.night.bedtimeEarliest) - 180;
   const bed = openBedtime();
-  const sig = w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`;
+  const sig = w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}`
+            : `start:${ns.isNight}:${ns.logged}:${bedtimeNear}`;
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -2595,9 +2694,21 @@ function renderSleepActions(w, cfg) {
     host.appendChild(b);
     return b;
   };
+
   if (bed && !w.asleep) {
     mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
     mk("btn-ghost", "+ Round", () => addBedtimeRound(1));
+  } else if (ns.isNight) {
+    // The word "nap" must never appear between bedtime and morning. At 1am the only
+    // thing a parent needs is one big button, and it must write subtype "night".
+    if (w.asleep) {
+      mk("btn-sleep btn-block active", "He's awake", () => endSleep());
+    } else if (ns.logged) {
+      mk("btn-sleep btn-block btn-night", "😴 Back to sleep", () => startSleep("night"));
+    } else {
+      mk("btn-ghost", "🌙 Into the crib", () => startBedtimeSession());
+      mk("btn-sleep", "😴 Asleep now", () => startSleep("night"));
+    }
   } else if (w.asleep) {
     mk("btn-sleep btn-block active", "End sleep", () => endSleep());
   } else if (bedtimeNear) {
@@ -3389,6 +3500,9 @@ window.leoDebug = {
   },
   clear() { TIME_SHIFT_MS = 0; _redrawAll(); return `now() = ${now().toLocaleString()} (real)`; },
   cfg() { return cfgNow(); },
+  nightState() { return nightState(); },
+  isNightRow(e) { return isNightRow(e); },
+  fmt(ms) { return dur(ms); },
   state() {
     const w = wakeState(), st = sleepDayStats();
     return {

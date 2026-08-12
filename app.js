@@ -543,6 +543,7 @@ async function loadEvents() {
 // own copy of the numbers, which is how it ended up pinging at 60 minutes for a
 // baby who needs 150.
 const SETTINGS_CACHE_KEY = "leo_settings_v1";
+let settingsTableOk = false;   // flipped true once the table answers a read
 
 async function loadSettings() {
   // localStorage first so the first paint is right even offline.
@@ -552,7 +553,16 @@ async function loadSettings() {
   } catch (e) {}
   if (!sb) return;
   const { data, error } = await sb.from("settings").select("key,value");
-  if (error) { console.warn("settings unavailable — using age defaults", error.message); return; }
+  if (error) {
+    // schema-settings.sql hasn't been run yet. Age defaults still work, but do NOT
+    // let realtime subscribe to a table that isn't there — a failed postgres_changes
+    // binding takes the whole channel down with it, and events/growth stop syncing
+    // between the two phones.
+    settingsTableOk = false;
+    console.warn("settings table unavailable — using built-in age defaults", error.message);
+    return;
+  }
+  settingsTableOk = true;
   for (const row of data || []) {
     if (row.key === "baby") SETTINGS.baby = { ...SETTINGS.baby, ...row.value };
     if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
@@ -565,7 +575,7 @@ async function loadSettings() {
 // Push the RESOLVED config back so the server side never has to resolve anything.
 // Also what makes his monthly birthday propagate without a deploy.
 async function writeResolvedIfChanged(force) {
-  if (!sb) return;
+  if (!sb || !settingsTableOk) return;
   const cfg = cfgNow();
   const value = { ...cfg, overrides: SETTINGS.overrides };
   const { data } = await sb.from("settings").select("value").eq("key", "sleep_model").maybeSingle();
@@ -599,13 +609,16 @@ let realtimeOn = false;
 function subscribeRealtime() {
   if (realtimeOn) return;   // onAuthStateChange can fire again (token refresh) — subscribe once
   realtimeOn = true;
-  sb.channel("events-live")
+  let ch = sb.channel("events-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "events" }, loadEvents)
     .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, loadMessages)
-    .on("postgres_changes", { event: "*", schema: "public", table: "growth" }, loadGrowth)
-    // Change a number on one phone, the other phone's headline updates without a reload.
-    .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, onSettingsChanged)
-    .subscribe();
+    .on("postgres_changes", { event: "*", schema: "public", table: "growth" }, loadGrowth);
+  // Change a number on one phone, the other phone's headline updates without a
+  // reload — but only bind this once the table is known to exist.
+  if (settingsTableOk) {
+    ch = ch.on("postgres_changes", { event: "*", schema: "public", table: "settings" }, onSettingsChanged);
+  }
+  ch.subscribe();
 }
 
 // Convenience finders over the in-memory list ------------------
@@ -2926,7 +2939,9 @@ function renderSettings() {
     `<div class="card-head"><h2>Sleep settings</h2></div>` +
     `<p class="set-band">Age band <b>${cfg.band}</b> — chosen from his age, automatically.` +
     (nb ? ` Next change ${nb.at.toLocaleDateString([], { day: "numeric", month: "short" })} → ${nb.band}.` : "") + `</p>` +
-    `<p class="set-note">These are guidelines, not medical advice. Everything below auto-updates as Leo grows; change a number only when you have a reason, and it will stick through his next birthday.</p>`;
+    `<p class="set-note">These are guidelines, not medical advice. Everything below auto-updates as Leo grows; change a number only when you have a reason, and it will stick through his next birthday.</p>` +
+    (settingsTableOk ? "" :
+      `<p class="set-warn">⚠️ Changes won't save or reach the other phone yet — <code>schema-settings.sql</code> hasn't been run in Supabase. The app is using the built-in age norms, which are correct; only overrides are unavailable.</p>`);
   host.appendChild(head);
 
   for (const group of SETTINGS_FIELDS) {

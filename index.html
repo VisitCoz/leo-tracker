@@ -68,67 +68,41 @@
       <!-- 0. Alerts — priority-ordered, dismissible, re-fire on the next occurrence -->
       <div id="leo-alerts" class="leo-alerts" aria-live="polite"></div>
 
-      <!-- 1. Sleep / awake headline. The window is a RANGE, not a cliff time:
-           a single "closes at 7:17" is what caused the panic put-downs. -->
+      <!-- 1. The headline. Two tiers, one rule: the HERO is the clock running right
+           now; the PAIR below is accumulated context that only moves when a sleep
+           ends. Every number carries a plain-English line saying what it means. -->
       <section id="leo-wake" class="card wake-card zone-green">
         <p id="leo-wake-eyebrow" class="card-eyebrow">Awake for</p>
-        <p id="leo-wake-time" class="wake-time">0:00</p>
+        <p id="leo-wake-time" class="wake-time">—</p>
         <p id="leo-wake-status" class="wake-status">Log a sleep to start the wake window</p>
+        <p id="leo-wake-why" class="wake-why"></p>
         <div id="leo-ww-track" class="ww-track">
           <div id="leo-ww-fill" class="ww-fill"></div>
           <div id="leo-ww-band" class="ww-band"></div>
+        </div>
+        <div id="leo-wake-pair" class="wake-pair">
+          <div><span id="leo-pair-a" class="pair-num">—</span><span id="leo-pair-a-lab" class="pair-lab">—</span></div>
+          <div><span id="leo-pair-b" class="pair-num">—</span><span id="leo-pair-b-lab" class="pair-lab">—</span></div>
         </div>
         <div id="leo-sleep-actions" class="leo-sleep-actions"></div>
         <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
       </section>
 
-      <!-- 2. Today's rhythm — day-bar. #leo-db-static is rebuilt only when the data
-           changes; #leo-db-now is the only thing the per-second tick touches. -->
-      <section class="card">
-        <div class="card-head"><h2>Today's rhythm</h2><span id="leo-db-total" class="since">—</span></div>
-        <div id="leo-daybar" class="leo-daybar">
-          <div id="leo-db-static"></div>
-          <div id="leo-db-now" class="leo-now" style="left:0%"></div>
-        </div>
-        <div class="leo-db-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
-        <div id="leo-nap-chips" class="db-chips"></div>
-        <div id="leo-nap-pips" class="db-pips"></div>
-        <div class="leo-db-legend">
-          <span><i class="leo-lg night"></i>Night</span>
-          <span><i class="leo-lg nap"></i>Nap</span>
-          <span><i class="leo-lg proj"></i>Next</span>
-          <span><i class="leo-lg bed"></i>Bedtime</span>
-          <span><i class="leo-lg cut"></i>Cutoff</span>
-          <span><i class="leo-lg now"></i>Now</span>
-        </div>
-        <p id="leo-db-summary" class="leo-db-summary">—</p>
+      <!-- 2. Naps. The hollow dots ARE the answer to "how many is he supposed to
+           have". Hidden entirely at night — there are no naps at 3am. -->
+      <section id="leo-naps-card" class="card">
+        <div class="card-head"><h2>Naps</h2><span id="leo-naps-total" class="since">—</span></div>
+        <div id="leo-nap-pips" class="nap-dots"></div>
+        <p id="leo-naps-why" class="wake-why"></p>
+        <p id="leo-naps-list" class="naps-list"></p>
+        <p id="leo-naps-next" class="naps-next"></p>
       </section>
 
-      <!-- 3. Day-sleep budget + tonight's projection. This replaced a nudge that
-           said "Xh more to reach 13h" — the 13–15h range INCLUDES night sleep, so
-           the app was pushing more daytime sleep and stealing it from the night. -->
-      <section class="card">
-        <div class="card-head"><h2>Sleep budget</h2><button id="leo-cfg-prov" class="link-btn leo-prov">—</button></div>
-        <div id="leo-gauge"></div>
-        <p id="leo-gauge-cap" class="leo-gauge-cap"></p>
-      </section>
-
-      <!-- 4. Two key sleep numbers -->
-      <section class="tiles leo-tiles">
-        <div class="tile"><span id="leo-longest" class="tile-num">—</span><span class="tile-label">longest night stretch — his "sleeping through the night" number</span></div>
-        <div class="tile"><span id="leo-avgww" class="tile-num">—</span><span class="tile-label">average wake window today</span></div>
-      </section>
-
-      <!-- 5. Night patterns — day/night feed split + wakes per night -->
-      <section class="card">
-        <div class="card-head"><h2>Night patterns</h2><span id="leo-night-flag" class="since">—</span></div>
-        <div id="leo-night-metrics"></div>
-      </section>
-
-      <!-- 5. Editable today log — fix a mislogged time in one tap -->
+      <!-- 3. The log. At night this is scoped to the night and titled "Tonight" —
+           filtering on the calendar day showed "No entries yet today" at 1am. -->
       <section class="card">
         <div class="card-head">
-          <h2>Today's log</h2>
+          <h2 id="leo-log-title">Today's log</h2>
           <button id="leo-export-btn" class="link-btn">Export CSV</button>
         </div>
         <p class="leo-log-hint">Tap ✏️ to fix a time · 🗑 to remove</p>

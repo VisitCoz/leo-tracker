@@ -26,8 +26,6 @@ let chat = [];            // chat messages (from the `messages` table)
 let tick = null;          // the 1-second clock interval
 let alertTick = null;     // the 15-second alert re-evaluation
 let alarmsOn = false;     // browser-notification permission granted?
-let statsRange = 1;       // Stats tab range in days (1 = today, 7 = week)
-let sleepChart = null;    // Chart.js instance
 let chatBusy = false;     // a chat reply is in flight
 let growth = [];          // weight/height measurements (growth table)
 let growWChart = null;    // Chart.js — weight-for-age
@@ -607,11 +605,11 @@ async function loadEvents() {
   render();
   renderSummary();   // data-driven: only redraw on change, not every second
   renderLog("log-list");       // old Home log (kept)
-  renderLog("leo-log-list");   // new Leo home log — data-driven, not per-second
-  renderRhythm();              // day-bar static layer — NOT per-second
-  renderLeoData();             // budget + projection + tiles + night patterns
+  renderLog("leo-log-list");   // Leo home log — data-driven, not per-second
+  renderNaps();                // nap dots + list
   renderAlerts();
-  renderStats();
+  // The day bar / budget / night patterns live under Training → Patterns now, and
+  // renderSleep() fills them when that sub-tab is open.
   if (tabOpen("sleep")) renderSleep();
 }
 
@@ -671,7 +669,7 @@ async function saveOverrides(next) {
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
   await writeResolvedIfChanged(true);
-  renderSettings(); renderRhythm(); renderLeoData(); renderAlerts(true); render();
+  renderSettings(); renderNaps(); renderAlerts(true); render(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Weight/height measurements (separate table, mirrors loadEvents).
@@ -1159,10 +1157,7 @@ function render() {
   renderTopBanner();                       // sticky — the one timer visible on every tab
   // Only redraw what's actually on screen. This used to run twelve renderers a
   // second against hidden tabs — 86,400 pointless DOM writes a day, on a phone.
-  if (tabOpen("leo")) {
-    renderLeoWake();
-    tickNow();                             // day-bar: moves ONE element, nothing else
-  }
+  if (tabOpen("leo")) renderLeoWake();
   if (tabOpen("home")) {
     renderLive();
     renderFeedButtons();
@@ -1178,6 +1173,7 @@ function render() {
   if (tabOpen("sleep")) {
     const el = $("tr-live-min"), b = openBedtime();
     if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
+    if (trainView === "patterns") tickNow();   // moves ONE element
   }
 }
 
@@ -1356,8 +1352,23 @@ const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨",
 function renderLog(listId) {
   const list = $(listId || "log-list");
   if (!list) return;
-  const today = events.filter((e) => isToday(e.start_at));
-  if (today.length === 0) { list.innerHTML = '<li class="log-empty">No entries yet today.</li>'; return; }
+  // At night, show THE NIGHT rather than the calendar day. Filtering on isToday()
+  // meant that at 1:43am the screen said "No entries yet today" — an empty log on
+  // the one night you most need to see what already happened.
+  const ns = nightState();
+  const nightScoped = ns.isNight && listId === "leo-log-list";
+  const title = $("leo-log-title");
+  if (title) title.textContent = nightScoped ? "Tonight" : "Today's log";
+  const today = nightScoped
+    ? events.filter((e) => {
+        const t = new Date(e.start_at).getTime();
+        return t >= ns.nightStart.getTime() && t < ns.morningAt.getTime();
+      })
+    : events.filter((e) => isToday(e.start_at));
+  if (today.length === 0) {
+    list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged tonight yet." : "No entries yet today."}</li>`;
+    return;
+  }
 
   list.innerHTML = "";
   for (const e of today) {
@@ -1513,7 +1524,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "leo")      { renderLeoWake(); renderRhythm(); renderLeoData(); renderAlerts(true); }
+  if (name === "leo")      { renderLeoWake(); renderNaps(); renderAlerts(true); }
   if (name === "grow")     renderGrowth();      // also (re)builds the charts now the canvas is visible
   if (name === "food")     renderFood();
   if (name === "planner")  renderPlanner();
@@ -2366,9 +2377,47 @@ function trainMethodHTML() {
   ${SLEEP_REASSURE + SLEEP_CITE + SLEEP_FOOTER}`;
 }
 
+// ---------- Sub-tab: PATTERNS ----------
+// The analytical cards, moved off the home screen. Home is for what is happening
+// now; this is for studying it. Same ids as before so renderRhythm/renderLeoData
+// work unchanged — their `if (!$(...)) return` guards make them no-ops when closed.
+function trainPatternsHTML() {
+  return `
+  <section class="card">
+    <div class="card-head"><h2>Today's rhythm</h2></div>
+    <div id="leo-daybar" class="leo-daybar">
+      <div id="leo-db-static"></div>
+      <div id="leo-db-now" class="leo-now" style="left:0%"></div>
+    </div>
+    <div class="leo-db-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
+    <div class="leo-db-legend">
+      <span><i class="leo-lg night"></i>Night</span>
+      <span><i class="leo-lg nap"></i>Nap</span>
+      <span><i class="leo-lg proj"></i>Next sleep</span>
+      <span><i class="leo-lg bed"></i>Bedtime</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Sleep budget</h2><button id="leo-cfg-prov" class="link-btn leo-prov">—</button></div>
+    <div id="leo-gauge"></div>
+    <p id="leo-gauge-cap" class="leo-gauge-cap"></p>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Longest stretch</h2><span id="leo-longest" class="since">—</span></div>
+    <p class="wake-why">His longest unbroken sleep over the last 7 nights — the "sleeping through the night" number. What matters is that it trends up, not what it is tonight.</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Night patterns</h2><span id="leo-night-flag" class="since">—</span></div>
+    <div id="leo-night-metrics"></div>
+  </section>`;
+}
+
 const TRAIN_TABS = [
   ["tonight", "Tonight"], ["ladder", "The ladder"], ["feeds", "Feeds"],
-  ["progress", "Progress"], ["rescue", "Rescue"], ["method", "Method"],
+  ["progress", "Progress"], ["patterns", "Patterns"], ["rescue", "Rescue"], ["method", "Method"],
 ];
 
 function renderSleep() {
@@ -2378,6 +2427,7 @@ function renderSleep() {
     trainView === "ladder"   ? TRAIN_LADDER :
     trainView === "feeds"    ? trainFeedsHTML() :
     trainView === "progress" ? trainProgressHTML() :
+    trainView === "patterns" ? trainPatternsHTML() :
     trainView === "rescue"   ? trainRescueHTML() :
     trainView === "method"   ? trainMethodHTML() : trainTonightHTML();
 
@@ -2398,6 +2448,16 @@ function renderSleep() {
   on("tr-asleep", finishBedtimeSession);
   on("tr-cancel", cancelBedtimeSession);
   on("tr-rescue", toggleRescueNight);
+
+  if (trainView === "patterns") {
+    // These ids only exist while Patterns is open, so they're filled here rather
+    // than at load. Same reason the provenance listener has to be bound here — it
+    // used to be a load-time binding, and the element is now recreated on every
+    // sub-tab switch, so it would silently stop working.
+    renderRhythm();
+    renderLeoData();
+    on("leo-cfg-prov", () => switchTab("settings"));
+  }
 }
 
 // ============================================================
@@ -2465,80 +2525,12 @@ async function loadInsight(force) {
 }
 
 // ============================================================
-//  10e. STATS
+//  10e. STATS — REMOVED
 // ============================================================
-function inRange(iso) {
-  const d = new Date(iso), t = now();
-  const start = new Date(t.getFullYear(), t.getMonth(), t.getDate());
-  start.setDate(start.getDate() - (statsRange - 1));
-  return d >= start;
-}
-function renderStats() {
-  if (!$("s-day")) return;   // Stats tab removed from the UI — nothing to draw
-  const sel = events.filter((e) => inRange(e.start_at));
-  let dayMs = 0, nightMs = 0, napCount = 0, breastMs = 0, breastCount = 0, bottleCount = 0, bottleMl = 0;
-  for (const e of sel) {
-    if (e.type === "sleep" && e.end_at) {
-      const s = new Date(e.end_at) - new Date(e.start_at);
-      if (e.subtype === "night") nightMs += s; else { dayMs += s; napCount++; }
-    }
-    if (e.type === "breast") { breastCount++; if (e.end_at) breastMs += new Date(e.end_at) - new Date(e.start_at); }
-    if (e.type === "bottle") { bottleCount++; bottleMl += e.amount_ml || 0; }
-  }
-  const hrs = (ms) => `${(ms / 3600000).toFixed(1)}h`;
-  $("s-day").textContent = `${napCount} · ${hrs(dayMs)}`;
-  $("s-night").textContent = hrs(nightMs);
-  $("s-total").textContent = hrs(dayMs + nightMs);
-  $("s-avgnap").textContent = napCount ? `${Math.round(dayMs / napCount / 60000)}m` : "—";
-  $("s-breast").textContent = breastCount;
-  $("s-breasttime").textContent = `${Math.round(breastMs / 60000)}m`;
-  $("s-bottle").textContent = bottleCount;
-  $("s-bottleml").textContent = `${bottleMl} ml`;
-  renderChart();
-}
-function renderChart() {
-  const canvas = $("sleep-chart");
-  if (!canvas || !window.Chart) return;
-  if (!sleepChart && canvas.offsetParent === null) return; // hidden — build when tab opens
-  const labels = [], dayData = [], nightData = [];
-  const t = now();
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() - i);
-    labels.push(d.toLocaleDateString([], { weekday: "short" }));
-    let day = 0, night = 0;
-    for (const e of events) {
-      if (e.type !== "sleep" || !e.end_at) continue;
-      const s = new Date(e.start_at);
-      if (s.getFullYear() === d.getFullYear() && s.getMonth() === d.getMonth() && s.getDate() === d.getDate()) {
-        const h = (new Date(e.end_at) - s) / 3600000;
-        if (e.subtype === "night") night += h; else day += h;
-      }
-    }
-    dayData.push(+day.toFixed(1)); nightData.push(+night.toFixed(1));
-  }
-  if (sleepChart) {
-    sleepChart.data.labels = labels;
-    sleepChart.data.datasets[0].data = dayData;
-    sleepChart.data.datasets[1].data = nightData;
-    sleepChart.update();
-    return;
-  }
-  sleepChart = new Chart(canvas, {
-    type: "bar",
-    data: { labels, datasets: [
-      { label: "Day", data: dayData, backgroundColor: "#e0b15a" },
-      { label: "Night", data: nightData, backgroundColor: "#5e9479" },
-    ] },
-    options: {
-      responsive: true,
-      plugins: { legend: { labels: { color: "#b9a6b6" } } },
-      scales: {
-        x: { stacked: true, ticks: { color: "#b9a6b6" }, grid: { display: false } },
-        y: { stacked: true, ticks: { color: "#b9a6b6" }, grid: { color: "#36283d" } },
-      },
-    },
-  });
-}
+// The Stats tab was taken out of the UI long ago; renderStats/renderChart/inRange
+// were still being called on every load and returning immediately. They also held
+// a SECOND nap-counting implementation (subtype-only, no clock), which is exactly
+// the bug this release fixes — it would have resurrected it if the tab came back.
 
 // ============================================================
 //  10g. CHAT — talk to Claude about Leo
@@ -2607,58 +2599,134 @@ async function sendChat(e) {
 
 const pctOfDay = (min) => Math.max(0, Math.min(100, (min / 1440) * 100));
 
-// ---- Headline. The window is shown as a RANGE. A single "closes at 7:17"
-// is what produced the panic put-downs: it reads as a deadline you're failing,
-// so you put down a baby who isn't tired yet and bedtime turns into a fight.
+// ---- The headline. ONE rule holds it together:
+//   HERO = the clock that is running right now.
+//   PAIR = accumulated context, which only moves when a sleep ends.
+// Plus a plain-English line under the hero saying what to do about it. Before
+// this, the same DOM node carried "napping for" and "asleep for" and "awake for",
+// and the day-sleep total was rendered four separate times further down.
 function renderLeoWake() {
   const card = $("leo-wake");
   if (!card) return;
   const cfg = cfgNow();
   const w = wakeState(null, cfg);
+  const ns = nightState(null, cfg);
   const track = $("leo-ww-track");
+  const st = sleepDayStats();
   renderSleepActions(w, cfg);
 
-  // Settling in the crib — the state you're actually in at 8pm.
+  // Softens every white ~8% and kills the pulse animations. No-op when unchanged.
+  document.body.classList.toggle("is-night", ns.isNight);
+  const napsCard = $("leo-naps-card");
+  if (napsCard) napsCard.classList.toggle("hidden", ns.isNight);
+
+  const set = (eyebrow, hero, status, why, zone) => {
+    $("leo-wake-eyebrow").textContent = eyebrow;
+    $("leo-wake-time").textContent = hero;
+    $("leo-wake-status").innerHTML = status;
+    $("leo-wake-why").textContent = why || "";
+    $("leo-wake-why").classList.toggle("hidden", !why);
+    card.className = `card wake-card zone-${zone}`;
+  };
+  const pair = (a, aLab, b, bLab) => {
+    const show = !!(a || b);
+    $("leo-wake-pair").classList.toggle("hidden", !show);
+    if (!show) return;
+    $("leo-pair-a").textContent = a || "—";
+    $("leo-pair-a-lab").textContent = aLab || "";
+    $("leo-pair-b").textContent = b || "—";
+    $("leo-pair-b-lab").textContent = bLab || "";
+  };
+
+  // ---- Settling in the crib (bedtime session running)
   const bed = openBedtime();
   if (bed && !w.asleep) {
     const mins = Math.round((now() - new Date(bed.start_at)) / 60000);
-    card.className = `card wake-card zone-${mins <= GATE_MINS ? "green" : "amber"}`;
-    $("leo-wake-eyebrow").textContent = `Settling · round ${bedtimeRounds(bed)}`;
-    $("leo-wake-time").textContent = dur(now() - new Date(bed.start_at));
-    $("leo-wake-status").innerHTML = mins <= GATE_MINS
-      ? `Under ${GATE_MINS} min so far — this counts toward the Phase 2 streak`
-      : `Rounds matter more than the clock. Calm first, then down awake.`;
+    set(`Settling · round ${bedtimeRounds(bed)}`,
+        dur(now() - new Date(bed.start_at)),
+        mins <= GATE_MINS ? `Under ${GATE_MINS} minutes so far` : `Calm first, then down awake.`,
+        mins <= GATE_MINS
+          ? `Nights under ${GATE_MINS} minutes are what unlock nap training.`
+          : `The number of rounds matters more than the clock. Keep them identical.`,
+        ns.isNight ? "night" : mins <= GATE_MINS ? "green" : "amber");
+    pair(null);
     track.classList.add("hidden");
     return;
   }
 
+  // ---- NIGHT ---------------------------------------------------------
+  if (ns.isNight) {
+    track.classList.add("hidden");
+    const nss = nightSleepStats(null, cfg);
+    if (w.asleep) {
+      set(`Tonight · down at ${clockTime(ns.nightStart)}`,
+          dur(now() - new Date(w.asleep.start_at)),
+          "Asleep for the night.",
+          `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
+          "night");
+      pair(plDur(nss.asleepMin), "total asleep tonight",
+           String(nss.wakes), nss.wakes === 1 ? "wake-up so far" : "wake-ups so far");
+      return;
+    }
+    if (ns.logged) {
+      // The exact state that produced "NAPPING FOR / Wake him by 5:15 PM".
+      set(`Night waking · ${w.wokeAt ? clockTime(w.wokeAt) : clockTime(ns.nightStart)}`,
+          w.wokeAt ? dur(now() - w.wokeAt) : "—",
+          "Awake in the night — this is not a nap.",
+          `Keep it dark and quiet. Tap "Back to sleep" when he's down again.`,
+          "night");
+      pair(plDur(nss.asleepMin), "asleep so far tonight",
+           plFmt(hhmmToMin(cfg.night.morningWakeEarliest)), `the day starts, ${plDur(ns.minsToMorning)} away`);
+      return;
+    }
+    // In the bedtime window, not down yet.
+    set("Bedtime window · open",
+        w.wokeAt ? dur(now() - w.wokeAt) : "—",
+        `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
+        "Calm and a bit later beats fast and too early.",
+        "night");
+    pair(plDur(st.napMins), "day sleep today",
+         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+    return;
+  }
+
+  // ---- DAY, ASLEEP ----------------------------------------------------
   if (w.asleep) {
-    const night = w.asleep.subtype === "night";
-    card.className = "card wake-card zone-green";
-    $("leo-wake-eyebrow").textContent = night ? "Asleep for the night 🌙" : "Napping for 💤";
-    $("leo-wake-time").textContent = dur(now() - new Date(w.asleep.start_at));
-    $("leo-wake-status").textContent = night
-      ? "Tap End sleep when he's up for the day"
-      : `Wake him by ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — later steals bedtime`;
+    const cutoff = hhmmToMin(cfg.naps.lastNapCutoff);
+    set(`Napping since ${clockTime(new Date(w.asleep.start_at))}`,
+        dur(now() - new Date(w.asleep.start_at)),
+        `Wake him by <b>${plFmt(cutoff)}</b>.`,
+        "A nap after that steals the tiredness he needs for bedtime.",
+        "green");
+    pair(plDur(st.napMins), "day sleep today",
+         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
     track.classList.add("hidden");
     return;
   }
 
-  $("leo-wake-eyebrow").textContent = "Awake for";
+  // ---- DAY, AWAKE -----------------------------------------------------
   if (!w.wokeAt) {
-    $("leo-wake-time").textContent = "—";
-    $("leo-wake-status").textContent = "Log a sleep to start the wake window";
-    card.className = "card wake-card zone-green";
+    set("Awake for", "—", "Log a sleep to start the wake window",
+        "Tap Start nap when he goes down and the timing builds itself.", "green");
+    pair(null);
     track.classList.add("hidden");
     return;
   }
 
-  $("leo-wake-time").textContent = dur(now() - w.wokeAt);
   const label = w.isLastOfDay ? "Bedtime window" : w.isFirstOfDay ? "First window" : "Window";
-  $("leo-wake-status").innerHTML = w.zone === "early"
-    ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
-    : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`;
-  card.className = `card wake-card zone-${w.zone}`;
+  set("Awake for",
+      dur(now() - w.wokeAt),
+      w.zone === "early"
+        ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
+        : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`,
+      w.zone === "early"
+        ? `Putting him down before he's tired is what makes bedtime long.`
+        : w.zone === "red"
+          ? `Past the window — overtired makes settling harder, not easier.`
+          : `He's usually ready for the next sleep after ${plDur(w.windowMin)}–${plDur(w.windowMax)} awake.`,
+      w.zone);
+  pair(plDur(st.napMins), "day sleep today",
+       `${clockTime(w.opensAt)}–${clockTime(w.closesAt)}`, "next sleep window");
 
   track.classList.remove("hidden");
   const scale = w.windowMax + 30;                 // headroom so overshoot stays visible
@@ -2666,6 +2734,41 @@ function renderLeoWake() {
   const band = $("leo-ww-band");
   band.style.left  = (w.windowMin / scale) * 100 + "%";
   band.style.width = ((w.windowMax - w.windowMin) / scale) * 100 + "%";
+}
+
+// ---- Naps. Answers "how many is he supposed to have" with hollow dots, and
+// says it in words underneath — the old pip row printed "1 of 2–3 naps" with
+// nothing telling you that was a target.
+function renderNaps() {
+  const host = $("leo-nap-pips");
+  if (!host) return;
+  const cfg = cfgNow();
+  const st = sleepDayStats();
+  const cap = cfg.naps.maxCount;
+
+  let dots = "";
+  for (let i = 0; i < Math.max(cap, st.napCount); i++) {
+    dots += `<span class="nap-dot${i < st.napCount ? (i >= cap ? " over" : " on") : ""}"></span>`;
+  }
+  host.innerHTML = dots;
+  $("leo-naps-total").textContent = plDur(st.napMins);
+  $("leo-naps-why").textContent = st.napCount > cap
+    ? `That's more than usual — ${cfg.naps.minCount}–${cap} naps a day is the target at ${cfg.band}.`
+    : `He usually has ${cfg.naps.minCount}–${cap} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
+
+  const ord = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
+  $("leo-naps-list").innerHTML = st.naps.length
+    ? st.naps.map((b, i) =>
+        `<span class="nap-item"><b>${ord[i] || i + 1}</b> ${clockTime(b.startAt)} · ` +
+        `${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
+    : `<span class="nap-item muted">No naps yet today.</span>`;
+
+  const w = wakeState(null, cfg);
+  $("leo-naps-next").textContent = w.asleep
+    ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
+    : w.opensAt
+      ? `Next nap window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}. Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}.`
+      : "";
 }
 
 // ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,
@@ -2680,8 +2783,11 @@ function renderSleepActions(w, cfg) {
   // The old code used it for both, and got a third of the clock wrong.
   const bedtimeNear = !ns.isNight && minOfDay(now()) >= hhmmToMin(cfg.night.bedtimeEarliest) - 180;
   const bed = openBedtime();
-  const sig = w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}`
-            : `start:${ns.isNight}:${ns.logged}:${bedtimeNear}`;
+  // ns.isNight belongs in EVERY signature, not just the "not asleep" one: the same
+  // open sleep row reads "He's awake" at 5:55am and "End sleep" at 6:05, and without
+  // it in the key the memo would keep the stale label across the boundary.
+  const sig = `${ns.isNight}:${ns.logged}:` + (
+    w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -2748,56 +2854,17 @@ function renderRhythm() {
     if (r > l) html += `<div class="db-proj" style="left:${l}%;width:${r - l}%"></div>`;
   }
   host.innerHTML = html;
-
-  // Chips carry the nap text. At 375px a 45-minute nap is 10 pixels wide inside
-  // the bar — no label was ever going to fit in there.
-  const chips = $("leo-nap-chips");
-  chips.innerHTML = st.naps.length
-    ? st.naps.map((b, i) =>
-        `<span class="db-chip${b.running ? " on" : ""}${!b.running && b.fullMins < cfg.naps.minUsefulNap ? " short" : ""}">` +
-        `Nap ${i + 1} · ${clockTime(b.startAt)} · ${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
-    : `<span class="db-chip muted">No naps logged yet</span>`;
-
-  const cap = cfg.naps.maxCount;
-  $("leo-nap-pips").innerHTML =
-    `<span class="pips${st.napCount >= cfg.naps.minCount && st.napCount <= cap ? " met" : ""}">` +
-    "●".repeat(Math.min(st.napCount, cap)) + "○".repeat(Math.max(0, cap - st.napCount)) +
-    (st.napCount > cap ? "●".repeat(st.napCount - cap) : "") + `</span>` +
-    `<span class="db-pips-lab">${st.napCount} of ${cfg.naps.minCount}–${cap} naps` +
-    (st.napCount > cap ? " · over the usual cap" : st.napCount === cap ? " · cap reached" : "") + `</span>`;
-
-  $("leo-db-total").textContent = `${plDur(st.napMins)} day sleep`;
   tickNow();
 }
 
-// ---- The ONLY thing the per-second tick touches on the day-bar.
+// ---- The ONLY thing the per-second tick touches on the day-bar. The summary
+// line that used to live here is gone: it printed "0m asleep so far today ·
+// asleep now for 7:30:12" — two irreconcilable numbers in one sentence, because
+// one was clipped at midnight and the other wasn't.
 function tickNow() {
   const el = $("leo-db-now");
   if (!el) return;
-  const t = now();
-  el.style.left = pctOfDay(minOfDay(t)) + "%";
-  const st = sleepDayStats(null, t);
-  const w = wakeState(null, null, t);
-  let tail;
-  if (w.asleep) tail = `asleep now for ${dur(t - new Date(w.asleep.start_at))}`;
-  else if (w.wokeAt) tail = `awake now for ${dur(t - w.wokeAt)}`;
-  else tail = "no sleep logged yet";
-  const s = $("leo-db-summary");
-  if (s) s.textContent = `${plDur(Math.round(st.sleptMs / 60000))} asleep so far today · ${tail}`;
-}
-
-// Average of today's completed wake windows (gap between a sleep ending and the next starting).
-function avgWakeWindowMins() {
-  const s = events.filter((e) => e.type === "sleep" && isToday(e.start_at))
-                  .slice().sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
-  const gaps = [];
-  for (let i = 0; i < s.length; i++) {
-    if (!s[i].end_at) continue;
-    const wakeEnd = new Date(s[i].end_at).getTime();
-    const next = s.slice(i + 1).find((x) => new Date(x.start_at).getTime() >= wakeEnd);
-    if (next) gaps.push((new Date(next.start_at).getTime() - wakeEnd) / 60000);
-  }
-  return gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
+  el.style.left = pctOfDay(minOfDay(now())) + "%";
 }
 
 // Average morning wake over the last 7 nights, for the bedtime projection.
@@ -2867,9 +2934,16 @@ function renderLeoData() {
       : "");
 
   const cap = $("leo-gauge-cap");
-  const r24line = `<span class="leo-24h">${plDur(r24)} in the last 24h — norm ${plDur(n24lo)}–${plDur(n24hi)}.</span>`;
-  if (over) {
-    cap.innerHTML = `Day sleep is <b>over the usual cap</b>. More naps now usually means a harder bedtime and more night waking, not less. ${r24line}`;
+  // Total sleep, last 24 hours — a ROLLING window, not the calendar day, so it can
+  // be compared honestly against a 24h norm.
+  const r24line = `<span class="leo-24h">Total sleep, last 24 hours: <b>${plDur(r24)}</b> (usual ${plDur(n24lo)}–${plDur(n24hi)}).</span>`;
+  const ns = nightState(null, cfg);
+  if (ns.isNight) {
+    cap.innerHTML = `Tonight is still in progress — day sleep starts counting at wake-up. ${r24line}`;
+  } else if (over) {
+    // The "more naps means a harder bedtime" sentence lives in the day-cap alert.
+    // It used to be printed here too, verbatim, at the same time.
+    cap.innerHTML = `Over the usual cap — the extra usually comes back as night waking. ${r24line}`;
   } else if (inRange) {
     cap.innerHTML = `Day sleep is in range for ${cfg.band} ✓ The rest should come overnight. ${r24line}`;
   } else {
@@ -2877,9 +2951,8 @@ function renderLeoData() {
   }
 
   const p = sleepProgress();
-  $("leo-longest").textContent = p.longest ? plDur(Math.round(p.longest / 60000)) : "—";
-  const aww = avgWakeWindowMins();
-  $("leo-avgww").textContent = aww != null ? plDur(aww) : "—";
+  const longest = $("leo-longest");
+  if (longest) longest.textContent = p.longest ? plDur(Math.round(p.longest / 60000)) : "—";
 
   renderProvenance(cfg);
   renderNightMetrics(cfg);
@@ -2893,7 +2966,8 @@ function renderProvenance(cfg) {
   if (!el) return;
   const short = (m) => (m % 60 ? `${Math.floor(m / 60)}h${pad(m % 60)}` : `${Math.floor(m / 60)}h`);
   const n = cfg.meta.overridden.length;
-  el.textContent = `${cfg.band} · ${short(cfg.ww.min)}–${short(cfg.ww.max)}` + (n ? ` · ${n} custom` : "") + " ›";
+  el.textContent = `${cfg.band} · wake windows ${short(cfg.ww.min)}–${short(cfg.ww.max)}` +
+    (n ? ` · ${n} custom` : "") + " ›";
 }
 
 // ---- Night patterns: day/night feed split + wakes per night (7 days).
@@ -2992,7 +3066,7 @@ async function onSettingsChanged(payload) {
   if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
-  render(); renderRhythm(); renderLeoData(); renderAlerts(true); renderSettings();
+  render(); renderNaps(); renderAlerts(true); renderSettings(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Minutes get a number box, clock times get a time box. Deliberately not sliders:
@@ -3437,7 +3511,6 @@ $("export-btn").addEventListener("click", exportCSV);
 // New Leo home + growth wiring.
 // NB: the sleep buttons are built by renderSleepActions() — they carry their own
 // listeners because the choice (nap only, or nap vs bedtime) changes during the day.
-$("leo-cfg-prov").addEventListener("click", () => switchTab("settings"));
 $("leo-export-btn").addEventListener("click", exportCSV);
 $("leo-ask-card").addEventListener("click", () => switchTab("ask"));
 $("leo-fix-btn").addEventListener("click", () => {
@@ -3460,13 +3533,6 @@ document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click",
 $("pl-subtabs").addEventListener("click", (e) => {
   if (e.target.dataset.v) { planner.view = e.target.dataset.v; plStore.set("view", planner.view); renderPlanner(); }
 });
-// Scoped to [data-range]: the edit modal now has .seg-btn buttons too, and an
-// unscoped selector here would set statsRange to NaN when you pick "Nap".
-document.querySelectorAll(".seg-btn[data-range]").forEach((b) => b.addEventListener("click", () => {
-  statsRange = Number(b.dataset.range);
-  document.querySelectorAll(".seg-btn[data-range]").forEach((x) => x.classList.toggle("active", x === b));
-  renderStats();
-}));
 $("edit-subtype").querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click", () => {
   $("edit-subtype").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
 }));
@@ -3488,7 +3554,10 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.at("17:25")
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
-function _redrawAll() { render(); renderRhythm(); renderLeoData(); renderAlerts(true); renderSettings(); }
+function _redrawAll() {
+  render(); renderNaps(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
+  if (tabOpen("sleep")) renderSleep();
+}
 
 window.leoDebug = {
   // Jump to a wall-clock time today. Everything reads now(), so everything moves.

@@ -23,7 +23,22 @@
 
   --radius: 18px;
   --tap: 56px;            /* minimum comfortable tap height */
+
+  /* Type scale. The home screen carried ~14 competing sizes; it now uses only
+     these five, so at 3am there is an obvious reading order. */
+  --t-hero: 64px;         /* the one live timer */
+  --t-num:  22px;         /* pair numbers, card stats */
+  --t-head: 18px;         /* h2 */
+  --t-body: 15px;         /* status lines */
+  --t-note: 13px;         /* eyebrows, why-lines, labels */
 }
+
+/* Night. Near-black, zero chroma — the old night state rendered zone-green, and
+   a lit green card is a wake-up signal in a dark room. */
+.zone-night { background: linear-gradient(160deg, #221a28, #1b1320); color: #c9bccd; }
+body.is-night { --ink: #ddd2d9; }
+body.is-night .wake-card { animation: none; }
+body.is-night .live-banner .dot { animation: none; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -77,8 +92,23 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 
 /* ---------- Wake-window headline ---------- */
 .wake-card { text-align: center; transition: background .4s, color .4s; }
-.wake-time { font-family: "Fraunces", serif; font-size: 68px; font-weight: 600; margin: 4px 0; line-height: 1; font-variant-numeric: tabular-nums; }
-.wake-status { margin: 0; font-size: 15px; opacity: .9; }
+.wake-time { font-family: "Fraunces", serif; font-size: var(--t-hero); font-weight: 600; margin: 4px 0; line-height: 1; font-variant-numeric: tabular-nums; }
+.wake-status { margin: 0; font-size: var(--t-body); opacity: .95; }
+/* Every number on this screen gets one plain sentence saying what to do about it. */
+.wake-why { margin: 6px 0 0; font-size: var(--t-note); line-height: 1.5; opacity: .72; }
+
+/* The pair: accumulated context under the live number. Only moves when a sleep
+   ends, so it never competes with the hero for attention. */
+.wake-pair {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin: 14px 0 12px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.13);
+}
+.pair-num { display: block; font-family: "Fraunces", serif; font-size: var(--t-num);
+  line-height: 1.15; font-variant-numeric: tabular-nums; }
+.pair-lab { display: block; font-size: 12px; opacity: .68; line-height: 1.35; margin-top: 3px; }
+
+/* The one thing she must hit half-asleep, one-handed, in the dark. */
+.btn-night { min-height: 72px; background: var(--sage); color: #0f2318; font-size: 18px; }
 .zone-green  { background: linear-gradient(160deg, #25402f, #1f3327); color: #d8f2e3; }
 .zone-amber  { background: linear-gradient(160deg, #4a3c1f, #3a2f1a); color: #f6e6bf; }
 .zone-orange { background: linear-gradient(160deg, #4d3320, #3c281a); color: #f6d8bf; }
@@ -554,6 +584,20 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .leo-lg.cut { background: var(--amber); width: 3px; border-radius: 1px; }
 .leo-db-legend { flex-wrap: wrap; gap: 6px 14px; }
 
+/* ---- Naps card (home) ----
+   The hollow dots ARE the answer to "how many is he supposed to have". */
+.nap-dots { display: flex; gap: 10px; align-items: center; margin: 2px 0 10px; }
+.nap-dot {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid var(--sage-deep); background: transparent;
+}
+.nap-dot.on { background: var(--sage); border-color: var(--sage); }
+.nap-dot.over { background: var(--amber); border-color: var(--amber); }
+.naps-list { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; font-size: var(--t-note); color: var(--ink-dim); }
+.nap-item b { color: var(--ink); font-weight: 600; margin-right: 4px; }
+.nap-item.muted { opacity: .7; }
+.naps-next { margin: 10px 0 0; font-size: 12.5px; color: var(--ink-dim); line-height: 1.5; }
+
 /* Nap chips carry the text. At 375px a 45-minute nap is 10px wide inside the
    bar — no label was ever going to fit in there. */
 .db-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
@@ -582,7 +626,8 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .leo-gauge-fill.over { background: linear-gradient(90deg, var(--amber), var(--orange)); }
 .leo-gauge-cap { margin-top: 10px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.45; }
 .leo-gauge-cap b { color: var(--sage); }
-.leo-24h { display: block; margin-top: 4px; color: #8f8090; }
+.leo-24h { display: block; margin-top: 6px; color: var(--ink-dim); }
+.leo-24h b { color: var(--ink); }
 
 /* Tonight's projection — a projection, not a target. */
 .leo-proj { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3a2c42; }

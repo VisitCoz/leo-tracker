@@ -17,15 +17,14 @@ if (!CONFIGURED) {
 }
 const sb = CONFIGURED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-// ---- Wake-window thresholds (minutes) — exact per spec --------
-const WAKE_TARGET = 90;            // window "closes" at 90 min
-const ZONE = { green: 75, amber: 90, orange: 105 }; // >105 = red
+// Wake-window thresholds used to live here as a flat 90 minutes. They are now
+// age-driven and live in ONE place — see "0b. SLEEP MODEL" below.
 
 // ---- App state ----------------------------------------------
 let events = [];          // all events we've loaded, newest first
 let chat = [];            // chat messages (from the `messages` table)
 let tick = null;          // the 1-second clock interval
-let alerted = false;      // so the 90-min alarm fires only once per wake window
+let alertTick = null;     // the 15-second alert re-evaluation
 let alarmsOn = false;     // browser-notification permission granted?
 let statsRange = 1;       // Stats tab range in days (1 = today, 7 = week)
 let sleepChart = null;    // Chart.js instance
@@ -52,39 +51,32 @@ function ageMonths() {
   return Math.max(0, m);
 }
 
-// ---- Age-appropriate daily targets (general guideline, NOT medical advice) ----
-// Total sleep includes night + naps. Picked by the first row whose max ≥ age.
-const TARGETS = [
-  { max: 3,   sleepLow: 14, sleepHigh: 17, napLow: 4, napHigh: 5, feedLow: 8, feedHigh: 12 },
-  { max: 5,   sleepLow: 14, sleepHigh: 16, napLow: 3, napHigh: 4, feedLow: 6, feedHigh: 8 },
-  { max: 8,   sleepLow: 13, sleepHigh: 15, napLow: 2, napHigh: 3, feedLow: 5, feedHigh: 6 },
-  { max: 11,  sleepLow: 12, sleepHigh: 15, napLow: 2, napHigh: 2, feedLow: 4, feedHigh: 5 },
-  { max: 17,  sleepLow: 11, sleepHigh: 14, napLow: 1, napHigh: 2, feedLow: 3, feedHigh: 4 },
-  { max: 999, sleepLow: 11, sleepHigh: 14, napLow: 1, napHigh: 1, feedLow: 3, feedHigh: 3 },
-];
-const targetsForAge = (months) => TARGETS.find((t) => months <= t.max) || TARGETS[TARGETS.length - 1];
-
-// Extra context sent to the AI: real local time + age-appropriate targets + today's actuals.
+// Extra context sent to the AI: real local time + the SAME resolved sleep config
+// the screen is using + today's actuals. The AI no longer carries its own numbers.
 function aiContext() {
+  const st = sleepDayStats();
   const today = events.filter((e) => isToday(e.start_at));
   const feeds = today.filter((e) => e.type === "breast" || e.type === "bottle").length;
-  let sleepMs = 0, naps = 0;
-  for (const e of today) {
-    if (e.type === "sleep" && e.subtype === "nap" && e.end_at) naps++;
-    if (e.type === "sleep" && e.end_at) sleepMs += new Date(e.end_at) - new Date(e.start_at);
-  }
   return {
     age: ageString(),
-    localTime: new Date().toLocaleString(),
+    localTime: now().toLocaleString(),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    targets: targetsForAge(ageMonths()),
-    actuals: { sleepH: +(sleepMs / 3600000).toFixed(1), naps, feeds },
+    cfg: cfgNow(),
+    actuals: {
+      sleepH: +(st.sleptMs / 3600000).toFixed(1),
+      daySleepMin: st.napMins,
+      naps: st.napCount,
+      feeds,
+    },
   };
 }
 
 // ---- Tiny helpers -------------------------------------------
 const $ = (id) => document.getElementById(id);
-const now = () => new Date();
+// EVERY time read in this app goes through now(). TIME_SHIFT_MS lets window.leoDebug
+// travel in time, so alerts can be tested against situations that haven't happened yet.
+let TIME_SHIFT_MS = 0;
+const now = () => new Date(Date.now() + TIME_SHIFT_MS);
 const pad = (n) => String(n).padStart(2, "0");
 
 // Format a span of milliseconds as m:ss (for feed timers).
@@ -106,6 +98,366 @@ function dur(ms) {
 // Format a Date as a local clock time like "2:45 PM".
 function clockTime(d) {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// ============================================================
+//  0b. SLEEP MODEL — the ONE source of truth
+// ============================================================
+// This app used to keep the wake window in six places and they disagreed: a flat
+// 90 minutes here, 135–180 in the Planner, 60/75/90 in the push sender, and "around
+// the 4-month stage" in the AI prompt. Leo outgrew all of them and nobody noticed,
+// so the app told us to put a not-tired baby to bed an hour early.
+//
+// Two rules keep that from happening again:
+//   1. EVERY duration is integer MINUTES. Every clock time is an "HH:MM" local
+//      string. No hours, no milliseconds, no Date objects in the config. (The
+//      "4h26m more to reach 13h" bug was a partial-day number compared against a
+//      whole-day one — a unit mistake wearing a UI costume.)
+//   2. The band is looked up from his age on EVERY read, so it advances by itself
+//      on his monthly birthday. No deploy, no cron, no reminder to anyone.
+const MODEL_VERSION = 1;
+
+// General guidelines, NOT medical advice. First row whose maxMonth ≥ age wins.
+const AGE_DEFAULTS = [
+  { maxMonth: 3,  band: "0–3 mo",
+    ww:    { min: 60,  target: 75,  max: 90,  firstOfDay: 60,  lastOfDay: 90 },
+    naps:  { minCount: 4, maxCount: 6, totalDayMin: 240, totalDayMax: 300, lastNapCutoff: "17:30", minUsefulNap: 20 },
+    night: { bedtimeEarliest: "19:00", bedtimeLatest: "21:30", morningWakeEarliest: "06:00", expectedNightSleep: [540, 660], feedGateMin: 120 },
+    feeds: { perDayMin: 8, perDayMax: 12, fullMl: 90, snackMl: 40, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [840, 1020] } },
+
+  { maxMonth: 5,  band: "4–5 mo",
+    ww:    { min: 105, target: 120, max: 135, firstOfDay: 105, lastOfDay: 150 },
+    naps:  { minCount: 3, maxCount: 4, totalDayMin: 180, totalDayMax: 240, lastNapCutoff: "17:00", minUsefulNap: 25 },
+    night: { bedtimeEarliest: "18:30", bedtimeLatest: "20:30", morningWakeEarliest: "06:00", expectedNightSleep: [600, 720], feedGateMin: 180 },
+    feeds: { perDayMin: 6, perDayMax: 8, fullMl: 120, snackMl: 50, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [840, 960] } },
+
+  // Leo is here as of Aug 2026. Wake windows 2.5–3h, 2–3 naps, 2.5–3.5h day sleep,
+  // 10–12h night, 13–15h total. Nothing may nap past 5:15 PM.
+  { maxMonth: 8,  band: "6–8 mo",
+    ww:    { min: 150, target: 165, max: 180, firstOfDay: 150, lastOfDay: 180 },
+    naps:  { minCount: 2, maxCount: 3, totalDayMin: 150, totalDayMax: 210, lastNapCutoff: "17:15", minUsefulNap: 30 },
+    // fullMl 150 = his normal bottle is 180. snackMl 60 covers the "takes 20–30ml
+    // and dozes off" comfort feed. snackMin 5 is the 4-minute snack that signals a
+    // night feed has become droppable.
+    night: { bedtimeEarliest: "19:00", bedtimeLatest: "20:45", morningWakeEarliest: "06:00", expectedNightSleep: [600, 720], feedGateMin: 180 },
+    feeds: { perDayMin: 5, perDayMax: 6, fullMl: 150, snackMl: 60, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [780, 900] } },
+
+  { maxMonth: 10, band: "9–10 mo",
+    ww:    { min: 180, target: 195, max: 210, firstOfDay: 165, lastOfDay: 210 },
+    naps:  { minCount: 2, maxCount: 2, totalDayMin: 120, totalDayMax: 180, lastNapCutoff: "16:30", minUsefulNap: 45 },
+    night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:30", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
+    feeds: { perDayMin: 4, perDayMax: 5, fullMl: 180, snackMl: 60, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [720, 870] } },
+
+  { maxMonth: 12, band: "11–12 mo",
+    ww:    { min: 195, target: 210, max: 225, firstOfDay: 180, lastOfDay: 225 },
+    naps:  { minCount: 2, maxCount: 2, totalDayMin: 120, totalDayMax: 165, lastNapCutoff: "16:00", minUsefulNap: 45 },
+    night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:15", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
+    feeds: { perDayMin: 4, perDayMax: 5, fullMl: 180, snackMl: 60, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [720, 840] } },
+
+  { maxMonth: 999, band: "13 mo+",
+    ww:    { min: 240, target: 270, max: 300, firstOfDay: 210, lastOfDay: 300 },
+    naps:  { minCount: 1, maxCount: 2, totalDayMin: 90, totalDayMax: 150, lastNapCutoff: "15:30", minUsefulNap: 45 },
+    night: { bedtimeEarliest: "18:45", bedtimeLatest: "20:00", morningWakeEarliest: "06:00", expectedNightSleep: [660, 720], feedGateMin: 240 },
+    feeds: { perDayMin: 3, perDayMax: 4, fullMl: 200, snackMl: 60, fullMin: 10, snackMin: 5 },
+    totals:{ healthy24h: [660, 840] } },
+];
+
+// ---- Clock helpers: "HH:MM" ⇄ minutes-past-midnight ⇄ a Date today ----
+function hhmmToMin(s) {
+  const [h, m] = String(s).split(":").map(Number);
+  return h * 60 + (m || 0);
+}
+function minToHhmm(min) {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+}
+// "17:15" → a Date at 17:15 on the same calendar day as `ref` (defaults to now()).
+function atToday(hhmm, ref) {
+  const t = ref || now();
+  const d = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  d.setMinutes(hhmmToMin(hhmm));
+  return d;
+}
+// Minutes past local midnight for a Date/ISO.
+function minOfDay(d) {
+  const x = d instanceof Date ? d : new Date(d);
+  return x.getHours() * 60 + x.getMinutes() + x.getSeconds() / 60;
+}
+
+function defaultsForMonth(m) {
+  return AGE_DEFAULTS.find((r) => m <= r.maxMonth) || AGE_DEFAULTS[AGE_DEFAULTS.length - 1];
+}
+
+// Overrides are a sparse dot-path map, e.g. { "ww.max": 190, "naps.lastNapCutoff": "17:00" }.
+// Anything not listed keeps the age default, so a value Mike set at 6 months survives
+// the jump to 7 months instead of being silently reverted.
+function applyOverrides(row, overrides) {
+  const cfg = JSON.parse(JSON.stringify(row));
+  const overridden = [];
+  for (const [path, value] of Object.entries(overrides || {})) {
+    const [section, key] = path.split(".");
+    if (!cfg[section] || !(key in cfg[section])) continue;   // ignore stale paths
+    if (JSON.stringify(cfg[section][key]) === JSON.stringify(value)) continue;
+    cfg[section][key] = value;
+    overridden.push(path);
+  }
+  return { cfg, overridden };
+}
+
+// Pure: same inputs, same output. Testable from the console via leoDebug.cfg().
+function resolveConfig(month, overrides) {
+  const row = defaultsForMonth(month);
+  const { cfg, overridden } = applyOverrides(row, overrides);
+  delete cfg.maxMonth;
+  return {
+    month,
+    band: row.band,
+    ww: cfg.ww, naps: cfg.naps, night: cfg.night, feeds: cfg.feeds, totals: cfg.totals,
+    meta: {
+      version: MODEL_VERSION,
+      source: overridden.length ? "custom" : "age-defaults",
+      overridden,
+      resolvedAt: now().toISOString(),
+    },
+  };
+}
+
+// Settings hydrated from Supabase (see loadSettings). Defaults stand in until then,
+// so the app renders correct numbers offline and on first paint.
+let SETTINGS = { overrides: {}, baby: { name: "Leo", birth_date: "2026-01-23", tz: "America/Cancun" } };
+let settingsRev = 0;
+
+// Memoized resolve. Called from render code, so it must never touch the network.
+let _cfgCache = { key: null, value: null };
+function cfgNow() {
+  const month = ageMonths();
+  const key = `${month}|${settingsRev}`;
+  if (_cfgCache.key !== key) _cfgCache = { key, value: resolveConfig(month, SETTINGS.overrides) };
+  return _cfgCache.value;
+}
+
+// ============================================================
+//  0c. DERIVATIONS — two functions, read everywhere
+// ============================================================
+// "How long has he been awake" and "how much has he slept today" each used to have
+// three implementations that quietly disagreed (one required end_at, one clipped at
+// midnight, one didn't). Now there are two, and everything reads them.
+//
+// Both take (events, t) so they can be called against synthetic data at a fake time —
+// that's how the alerts get tested. Both default to the live globals.
+
+// Everything about the current wake window.
+// Anchors on the sleep that ENDED most recently, which is what a parent means by
+// "since he woke up" — and what wake-watch now does too, so they can't disagree.
+function wakeState(evts, cfg, t) {
+  const T = t || now();
+  const list = evts || events;
+  const c = cfg || cfgNow();
+  const asleep = list.find((e) => e.type === "sleep" && !e.end_at) || null;
+  const last = list.filter((e) => e.type === "sleep" && e.end_at)
+                   .sort((a, b) => new Date(b.end_at) - new Date(a.end_at))[0] || null;
+
+  const out = {
+    asleep, last, wokeAt: null, awakeMin: 0, zone: "green",
+    windowMin: c.ww.min, windowMax: c.ww.max, windowTarget: c.ww.target,
+    opensAt: null, targetAt: null, closesAt: null,
+    isFirstOfDay: false, isLastOfDay: false,
+  };
+  if (asleep || !last) return out;
+
+  const st = sleepDayStats(list, T);
+  const spread = Math.max(0, c.ww.max - c.ww.min);
+  // The first window of the morning is the shortest, the one before bed the longest.
+  out.isFirstOfDay = st.napCount === 0 && (last.subtype === "night" || minOfDay(new Date(last.end_at)) < hhmmToMin(c.night.morningWakeEarliest) + 180);
+  out.isLastOfDay  = st.napCount >= c.naps.maxCount || minOfDay(T) >= hhmmToMin(c.naps.lastNapCutoff);
+  if (out.isLastOfDay)       { out.windowMin = Math.max(0, c.ww.lastOfDay - spread); out.windowMax = c.ww.lastOfDay; }
+  else if (out.isFirstOfDay) { out.windowMin = c.ww.firstOfDay; out.windowMax = c.ww.firstOfDay + spread; }
+  out.windowTarget = Math.min(Math.max(c.ww.target, out.windowMin), out.windowMax);
+
+  const wokeAt = new Date(last.end_at);
+  out.wokeAt = wokeAt;
+  out.awakeMin = (T - wokeAt) / 60000;
+  out.opensAt  = new Date(wokeAt.getTime() + out.windowMin * 60000);
+  out.targetAt = new Date(wokeAt.getTime() + out.windowTarget * 60000);
+  out.closesAt = new Date(wokeAt.getTime() + out.windowMax * 60000);
+
+  // Five states, not four. "Too early to be tired" and "put him down now" are
+  // opposite instructions; collapsing them into one green means the headline is
+  // green for two and a half hours and stops telling you anything.
+  const a = out.awakeMin;
+  if (a < out.windowMin)            out.zone = "early";
+  else if (a < out.windowTarget)    out.zone = "green";
+  else if (a <= out.windowMax)      out.zone = "amber";
+  else if (a <= out.windowMax + 20) out.zone = "orange";
+  else                              out.zone = "red";
+  return out;
+}
+
+// Sleep clipped to the calendar day of `t`. One implementation for the day-bar,
+// the totals, the alerts and the AI, so they can never print different numbers.
+function sleepDayStats(evts, t) {
+  const T = t || now();
+  const list = evts || events;
+  const dayStart = new Date(T.getFullYear(), T.getMonth(), T.getDate()).getTime();
+  const dayMs = 86400000, dayEnd = dayStart + dayMs, nowMs = T.getTime();
+
+  const blocks = [];
+  let sleptMs = 0, napMins = 0, nightMins = 0, napCount = 0, lastNapEnd = null;
+
+  const sleeps = list
+    .filter((e) => e.type === "sleep" &&
+      new Date(e.start_at).getTime() < dayEnd &&
+      (e.end_at ? new Date(e.end_at).getTime() : nowMs) >= dayStart)
+    .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+
+  for (const e of sleeps) {
+    const rawStart = new Date(e.start_at).getTime();
+    const rawEnd   = e.end_at ? new Date(e.end_at).getTime() : nowMs;
+    const s  = Math.max(rawStart, dayStart);
+    const en = Math.min(rawEnd, dayEnd, nowMs);
+    if (en <= s) continue;
+    const ms = en - s;
+    const kind = e.subtype === "night" ? "night" : "nap";
+    sleptMs += ms;
+    if (kind === "nap") {
+      // Count the nap he is in RIGHT NOW. The old code required end_at, so a
+      // running nap read as zero and the "4th nap" warning could never fire.
+      napCount++;
+      napMins += ms / 60000;
+      if (e.end_at) lastNapEnd = new Date(Math.max(lastNapEnd ? lastNapEnd.getTime() : 0, rawEnd));
+    } else {
+      nightMins += ms / 60000;
+    }
+    blocks.push({
+      id: e.id, e, kind, index: kind === "nap" ? napCount : 0,
+      left: (s - dayStart) / dayMs * 100,
+      width: (en - s) / dayMs * 100,
+      ms, mins: ms / 60000,
+      fullMins: (rawEnd - rawStart) / 60000,   // unclipped — what "a 25-minute nap" means
+      running: !e.end_at,
+      startAt: new Date(rawStart), endAt: e.end_at ? new Date(rawEnd) : null,
+    });
+  }
+  return {
+    dayStart, dayMs, nowMs, sleptMs,
+    napCount, napMins: Math.round(napMins), nightMins: Math.round(nightMins),
+    lastNapEnd, blocks,
+    naps: blocks.filter((b) => b.kind === "nap"),
+  };
+}
+
+// ---- Feed size. The reverse-cycling question is not "how many feeds at night"
+// but "how BIG are they" — a 180ml bottle and a 20ml comfort suck are the same
+// row in the log and completely different facts. Bottles carry ml, breast feeds
+// carry duration; neither converts honestly into the other, so they're never
+// added together — each is judged against its own threshold.
+function classifyFeed(e, cfg) {
+  const c = cfg || cfgNow();
+  if (e.type === "bottle") {
+    const ml = e.amount_ml || 0;
+    return { unit: "ml", size: ml, label: `${ml} ml`,
+             kind: ml >= c.feeds.fullMl ? "full" : ml <= c.feeds.snackMl ? "snack" : "partial" };
+  }
+  if (!e.end_at) return { unit: "min", size: null, label: "running", kind: "partial" };
+  const mins = Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000);
+  return { unit: "min", size: mins, label: `${mins} min`,
+           kind: mins >= c.feeds.fullMin ? "full" : mins <= c.feeds.snackMin ? "snack" : "partial" };
+}
+
+// A night feed is one taken after he went DOWN for the night — the bedtime
+// bottle is the last feed of the day, not a night feed. Counting it as one made
+// the reverse-cycling figure read 83% when the honest answer was 45%, which is
+// the difference between "fix the days" and "nothing to fix".
+function nightWindowFor(d, cfg) {
+  const c = cfg || cfgNow();
+  const dayStart = d.getTime();
+  const morning = dayStart + 24 * 3600000 + hhmmToMin(c.night.morningWakeEarliest) * 60000;
+  // Prefer the actual logged bedtime; fall back to the latest sensible bedtime.
+  const nightSleep = events
+    .filter((e) => e.type === "sleep" && e.subtype === "night")
+    .map((e) => new Date(e.start_at).getTime())
+    .filter((s) => s >= dayStart + 16 * 3600000 && s < morning)
+    .sort((a, b) => a - b)[0];
+  return { from: nightSleep || dayStart + hhmmToMin(c.night.bedtimeLatest) * 60000, to: morning };
+}
+
+const isNightFeedTime = (d, cfg) => {
+  const c = cfg || cfgNow();
+  const t = d.getTime();
+  for (let i = 0; i <= 8; i++) {
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+    const w = nightWindowFor(day, c);
+    if (t >= w.from && t < w.to) return true;
+  }
+  return false;
+};
+
+// Feeds grouped by NIGHT (bedtime through the following morning), newest first.
+function nightFeedHistory(nights, cfg) {
+  const c = cfg || cfgNow();
+  const T = now();
+  const out = [];
+  for (let i = 0; i < (nights || 7); i++) {
+    const d = new Date(T.getFullYear(), T.getMonth(), T.getDate() - i);
+    const { from, to } = nightWindowFor(d, c);
+    if (from > T.getTime()) continue;
+    const feeds = events
+      .filter((e) => (e.type === "breast" || e.type === "bottle"))
+      .filter((e) => { const at = new Date(e.start_at).getTime(); return at >= from && at < to; })
+      .sort((a, b) => new Date(a.start_at) - new Date(b.start_at))
+      .map((e) => ({ e, at: new Date(e.start_at), ...classifyFeed(e, c) }));
+    out.push({
+      date: d, feeds,
+      full: feeds.filter((f) => f.kind === "full").length,
+      snack: feeds.filter((f) => f.kind === "snack").length,
+      ml: feeds.filter((f) => f.unit === "ml").reduce((a, f) => a + (f.size || 0), 0),
+      breastMin: feeds.filter((f) => f.unit === "min").reduce((a, f) => a + (f.size || 0), 0),
+    });
+  }
+  return out;
+}
+
+// Milk taken by day vs by night, kept in native units. This is the number that
+// actually moves when reverse cycling breaks — feed COUNT can stay flat while
+// the volume shifts back into the day.
+function milkSplit7d(cfg) {
+  const c = cfg || cfgNow();
+  const T = now(), from = T.getTime() - 7 * 86400000;
+  let dayMl = 0, nightMl = 0, dayMin = 0, nightMin = 0;
+  for (const e of events) {
+    if (e.type !== "breast" && e.type !== "bottle") continue;
+    const at = new Date(e.start_at);
+    if (at.getTime() < from || at > T) continue;
+    const f = classifyFeed(e, c);
+    const night = isNightFeedTime(at, c);
+    if (f.unit === "ml") { if (night) nightMl += f.size || 0; else dayMl += f.size || 0; }
+    else { if (night) nightMin += f.size || 0; else dayMin += f.size || 0; }
+  }
+  const mlPct  = (dayMl + nightMl)   ? (nightMl  / (dayMl + nightMl))   * 100 : null;
+  const minPct = (dayMin + nightMin) ? (nightMin / (dayMin + nightMin)) * 100 : null;
+  return { dayMl, nightMl, dayMin, nightMin, mlPct, minPct };
+}
+
+// Total sleep over a ROLLING 24 hours. The honest comparison against the 13–15h
+// norm — the old code compared sleep-so-far-today against a whole-day target, which
+// is why it spent every morning insisting Leo was hours short.
+function sleepRolling24hMin(evts, t) {
+  const T = t || now();
+  const list = evts || events;
+  const from = T.getTime() - 86400000, to = T.getTime();
+  let ms = 0;
+  for (const e of list) {
+    if (e.type !== "sleep") continue;
+    const s = Math.max(new Date(e.start_at).getTime(), from);
+    const en = Math.min(e.end_at ? new Date(e.end_at).getTime() : to, to);
+    if (en > s) ms += en - s;
+  }
+  return Math.round(ms / 60000);
 }
 
 // ============================================================
@@ -140,18 +492,26 @@ function showAuth() {
   $("app-view").classList.add("hidden");
   $("auth-view").classList.remove("hidden");
   if (tick) { clearInterval(tick); tick = null; }
+  if (alertTick) { clearInterval(alertTick); alertTick = null; }
 }
 
 async function showApp() {
   $("auth-view").classList.add("hidden");
   $("app-view").classList.remove("hidden");
   $("age-line").textContent = "Leo · " + ageString();
+  // First run on a device: remember his age silently, so the "Leo turned N months"
+  // card only appears on a real birthday, not the first time you open the app.
+  try { if (localStorage.getItem(SEEN_MONTH_KEY) === null) localStorage.setItem(SEEN_MONTH_KEY, String(ageMonths())); } catch (e) {}
+  await loadSettings();                        // before loadEvents — every render reads cfg
   await loadEvents();
   await loadMessages();
   await loadGrowth();
   subscribeRealtime();
   loadInsight();                               // cached, see below
   if (!tick) tick = setInterval(render, 1000); // live clocks update every second
+  // Alerts on their own slow cadence. NOT in render(): a dismiss button that gets
+  // rebuilt every second can't be tapped.
+  if (!alertTick) alertTick = setInterval(() => renderAlerts(), 15000);
 }
 
 // ============================================================
@@ -168,9 +528,60 @@ async function loadEvents() {
   renderSummary();   // data-driven: only redraw on change, not every second
   renderLog("log-list");       // old Home log (kept)
   renderLog("leo-log-list");   // new Leo home log — data-driven, not per-second
-  renderLeoData();             // gauge + tiles for the Leo home
+  renderRhythm();              // day-bar static layer — NOT per-second
+  renderLeoData();             // budget + projection + tiles + night patterns
+  renderAlerts();
   renderStats();
-  if (!$("tab-sleep").classList.contains("hidden")) renderSleep();
+  if (tabOpen("sleep")) renderSleep();
+}
+
+// ============================================================
+//  2b. SETTINGS — shared config, so both phones AND the push sender agree
+// ============================================================
+// The app is the only writer. The `settings` table is the runtime source for
+// anything not running in a browser: wake-watch reads it instead of carrying its
+// own copy of the numbers, which is how it ended up pinging at 60 minutes for a
+// baby who needs 150.
+const SETTINGS_CACHE_KEY = "leo_settings_v1";
+
+async function loadSettings() {
+  // localStorage first so the first paint is right even offline.
+  try {
+    const cached = JSON.parse(localStorage.getItem(SETTINGS_CACHE_KEY) || "null");
+    if (cached) { SETTINGS = { ...SETTINGS, ...cached }; settingsRev++; }
+  } catch (e) {}
+  if (!sb) return;
+  const { data, error } = await sb.from("settings").select("key,value");
+  if (error) { console.warn("settings unavailable — using age defaults", error.message); return; }
+  for (const row of data || []) {
+    if (row.key === "baby") SETTINGS.baby = { ...SETTINGS.baby, ...row.value };
+    if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
+  }
+  settingsRev++;
+  try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
+  await writeResolvedIfChanged();
+}
+
+// Push the RESOLVED config back so the server side never has to resolve anything.
+// Also what makes his monthly birthday propagate without a deploy.
+async function writeResolvedIfChanged(force) {
+  if (!sb) return;
+  const cfg = cfgNow();
+  const value = { ...cfg, overrides: SETTINGS.overrides };
+  const { data } = await sb.from("settings").select("value").eq("key", "sleep_model").maybeSingle();
+  const cur = data && data.value;
+  if (!force && cur && cur.month === cfg.month && cur.meta && cur.meta.version === MODEL_VERSION &&
+      JSON.stringify(cur.overrides || {}) === JSON.stringify(SETTINGS.overrides)) return;
+  const { error } = await sb.from("settings").upsert({ key: "sleep_model", value, updated_at: now().toISOString() }, { onConflict: "key" });
+  if (error) console.warn("could not save sleep_model", error.message);
+}
+
+async function saveOverrides(next) {
+  SETTINGS.overrides = next;
+  settingsRev++;
+  try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
+  await writeResolvedIfChanged(true);
+  renderSettings(); renderRhythm(); renderLeoData(); renderAlerts(true); render();
 }
 
 // Weight/height measurements (separate table, mirrors loadEvents).
@@ -192,6 +603,8 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "events" }, loadEvents)
     .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, loadMessages)
     .on("postgres_changes", { event: "*", schema: "public", table: "growth" }, loadGrowth)
+    // Change a number on one phone, the other phone's headline updates without a reload.
+    .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, onSettingsChanged)
     .subscribe();
 }
 
@@ -224,14 +637,14 @@ async function tapBreast(side) {
   await loadEvents();
 }
 async function stopFeed(row) {
-  await sb.from("events").update({ end_at: new Date().toISOString() }).eq("id", row.id);
+  await sb.from("events").update({ end_at: now().toISOString() }).eq("id", row.id);
 }
 
 function openBottleModal() { openModal("bottle-modal"); $("bottle-ml").value = ""; setTimeout(() => $("bottle-ml").focus(), 50); }
 async function saveBottle() {
   const ml = parseInt($("bottle-ml").value, 10);
   if (!ml || ml <= 0) { $("bottle-ml").focus(); return; }
-  const ts = new Date().toISOString();
+  const ts = now().toISOString();
   await sb.from("events").insert({ type: "bottle", amount_ml: ml, end_at: ts });
   closeModal();
   await loadEvents();
@@ -240,17 +653,95 @@ async function saveBottle() {
 // ============================================================
 //  4. SLEEP — start / end, auto nap vs night
 // ============================================================
-async function tapSleep() {
+// Nap vs night used to be guessed from the clock — 7pm–7am was "night", set once
+// at the start and impossible to correct. A 6:45pm bedtime was therefore filed as
+// his fourth nap, and every nap-count alert built on top of that would be wrong.
+// Now you say which one it is, and you can fix it afterwards in the edit modal.
+async function startSleep(kind) {
+  if (openSleep()) return;
+  await sb.from("events").insert({ type: "sleep", subtype: kind, start_at: now().toISOString() });
+  await loadEvents();
+}
+async function endSleep() {
   const running = openSleep();
-  if (running) {
-    await sb.from("events").update({ end_at: new Date().toISOString() }).eq("id", running.id);
+  if (!running) return;
+  await sb.from("events").update({ end_at: now().toISOString() }).eq("id", running.id);
+  await loadEvents();
+}
+
+// ---- Bedtime sessions ---------------------------------------
+// The gap between "into the crib" and "asleep" is the number the whole training
+// programme is judged on — Phase 2 (nap conversion) unlocks at ≤15 minutes for
+// 4–5 nights running. Logging only the sleep row can't see that gap, so a bedtime
+// session records it: start_at = into the crib, end_at = asleep, note = rounds.
+// `events.type` has no CHECK constraint and every reader filters by type
+// explicitly, so this needs no schema change.
+const openBedtime = () => events.find((e) => e.type === "bedtime" && !e.end_at);
+const bedtimeRounds = (e) => { const m = /rounds=(\d+)/.exec(e.note || ""); return m ? +m[1] : 0; };
+const isRescue = (e) => /rescue/.test(e.note || "");
+
+async function startBedtimeSession() {
+  if (openBedtime() || openSleep()) return;
+  await sb.from("events").insert({ type: "bedtime", start_at: now().toISOString(), note: "rounds=1" });
+  await loadEvents();
+}
+// A "round" is one full trip up the ladder and back down. Counting them is how
+// you see the burst dying: rounds trending down means it's working.
+async function addBedtimeRound(delta) {
+  const b = openBedtime();
+  if (!b) return;
+  const n = Math.max(1, bedtimeRounds(b) + (delta || 1));
+  await sb.from("events").update({ note: (b.note || "").replace(/rounds=\d+/, `rounds=${n}`) || `rounds=${n}` }).eq("id", b.id);
+  await loadEvents();
+}
+// Closing the session also opens the night sleep, so there's no double entry and
+// the crib-fighting minutes never get counted as sleep.
+async function finishBedtimeSession() {
+  const b = openBedtime();
+  if (!b) return;
+  const t = now().toISOString();
+  await sb.from("events").update({ end_at: t }).eq("id", b.id);
+  if (!openSleep()) await sb.from("events").insert({ type: "sleep", subtype: "night", start_at: t });
+  await loadEvents();
+}
+async function cancelBedtimeSession() {
+  const b = openBedtime();
+  if (!b) return;
+  await sb.from("events").delete().eq("id", b.id);
+  await loadEvents();
+}
+
+// A rescue night is a night the method doesn't apply to — he was in pain, not
+// protesting. It must not break the streak, because punishing a sick night is
+// what makes parents abandon the plan.
+async function toggleRescueNight() {
+  const b = openBedtime() || tonightsBedtime();
+  const t = now().toISOString();
+  if (!b) {
+    await sb.from("events").insert({ type: "bedtime", start_at: t, end_at: t, note: "rounds=0 rescue" });
   } else {
-    const h = now().getHours();
-    const subtype = (h >= 19 || h < 7) ? "night" : "nap"; // 7pm–7am = night
-    await sb.from("events").insert({ type: "sleep", subtype });
-    alerted = false; // a new sleep resets the wake-window alarm
+    const note = isRescue(b) ? (b.note || "").replace(/\s*rescue/, "") : `${b.note || "rounds=0"} rescue`;
+    await sb.from("events").update({ note }).eq("id", b.id);
   }
   await loadEvents();
+}
+
+// The bedtime session belonging to "tonight" — an evening one, or one from after
+// midnight that still belongs to yesterday's night.
+function tonightsBedtime(t) {
+  const T = t || now();
+  const cutoff = new Date(T.getFullYear(), T.getMonth(), T.getDate(), 12, 0).getTime();
+  const from = minOfDay(T) < 12 * 60 ? cutoff - 86400000 : cutoff;
+  return events.find((e) => e.type === "bedtime" && new Date(e.start_at).getTime() >= from) || null;
+}
+// Fallback for the old Home-tab button, which is a single toggle.
+function defaultSleepKind(t) {
+  const cfg = cfgNow(), m = minOfDay(t || now());
+  return (m >= hhmmToMin(cfg.night.bedtimeEarliest) || m < hhmmToMin(cfg.night.morningWakeEarliest)) ? "night" : "nap";
+}
+async function tapSleep() {
+  if (openSleep()) await endSleep();
+  else await startSleep(defaultSleepKind());
 }
 
 // ============================================================
@@ -310,6 +801,12 @@ function openEditModal(e) {
   $("edit-row-end").classList.toggle("hidden", !hasEnd);
   $("edit-row-ml").classList.toggle("hidden", e.type !== "bottle");
   $("edit-row-note").classList.toggle("hidden", e.type !== "milestone");
+  $("edit-row-subtype").classList.toggle("hidden", e.type !== "sleep");
+  if (e.type === "sleep") {
+    const want = e.subtype === "night" ? "night" : "nap";
+    $("edit-subtype").querySelectorAll(".seg-btn")
+      .forEach((b) => b.classList.toggle("active", b.dataset.subtype === want));
+  }
   $("edit-start").value = toLocalInput(e.start_at);
   $("edit-end").value   = hasEnd ? toLocalInput(e.end_at) : "";
   $("edit-ml").value    = e.type === "bottle" ? (e.amount_ml || "") : "";
@@ -336,6 +833,10 @@ async function saveEdit() {
       fields.end_at = null; // re-open a running entry
     }
   }
+  if (e.type === "sleep") {
+    const on = $("edit-subtype").querySelector(".seg-btn.active");
+    if (on) fields.subtype = on.dataset.subtype;
+  }
   if (e.type === "bottle") {
     const ml = parseInt($("edit-ml").value, 10);
     if (!ml || ml <= 0) { msg.textContent = "Enter a milliliter amount."; return; }
@@ -353,23 +854,223 @@ async function saveEdit() {
 }
 
 // ============================================================
+//  6c. ALERTS — one pure function, priority-ordered, dismissible
+// ============================================================
+// evaluateAlerts() takes (events, cfg, t) and returns a list. No DOM, no globals,
+// no side effects — so it can be run against a made-up day at a made-up time:
+//   leoDebug.fakeDay("06:10 wake, 08:00-08:45 nap, 16:40- nap"); leoDebug.at("17:25");
+//   leoDebug.alerts()
+// That is the test suite. There isn't another one.
+
+const SEV_RANK = { urgent: 0, warn: 1, info: 2 };
+const ALERT_DISMISS_KEY = "leo_alert_dismissed_v1";
+const SEEN_MONTH_KEY = "leo_seen_month";
+
+const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const sameDay = (a, b) => dateKey(a) === dateKey(b);
+
+function dismissedMap() {
+  try { return JSON.parse(localStorage.getItem(ALERT_DISMISS_KEY) || "{}"); } catch (e) { return {}; }
+}
+// Dismissal is per-device on purpose: Mike clearing a banner shouldn't clear it off
+// Emma's phone. The key carries the date or the row id, so the NEXT occurrence has a
+// different key and fires again — that's the whole re-trigger mechanism.
+function dismissAlert(key) {
+  const m = dismissedMap();
+  m[key] = Date.now();
+  const cutoff = Date.now() - 30 * 86400000;
+  for (const k of Object.keys(m)) if (m[k] < cutoff) delete m[k];
+  try { localStorage.setItem(ALERT_DISMISS_KEY, JSON.stringify(m)); } catch (e) {}
+  if (key.startsWith("month:")) {
+    try { localStorage.setItem(SEEN_MONTH_KEY, key.slice(6)); } catch (e) {}
+  }
+  renderAlerts(true);
+}
+
+function evaluateAlerts(evts, cfg, t) {
+  const T = t || now();
+  const list = evts || events;
+  const c = cfg || cfgNow();
+  const st = sleepDayStats(list, T);
+  const w = wakeState(list, c, T);
+  const dk = dateKey(T);
+  const nowMin = minOfDay(T);
+  const cutoffMin = hhmmToMin(c.naps.lastNapCutoff);
+  const morningMin = hhmmToMin(c.night.morningWakeEarliest);
+  const out = [];
+
+  // 🔴 Put down before he was tired. The most common cause of a long bedtime.
+  if (w.asleep && w.asleep.subtype === "night") {
+    const startMs = new Date(w.asleep.start_at).getTime();
+    const prev = list
+      .filter((e) => e.type === "sleep" && e.end_at && new Date(e.end_at).getTime() <= startMs)
+      .sort((a, b) => new Date(b.end_at) - new Date(a.end_at))[0];
+    if (prev) {
+      const awakeBefore = (startMs - new Date(prev.end_at).getTime()) / 60000;
+      if (awakeBefore < c.ww.min) out.push({
+        id: "undertired-bedtime", sev: "urgent", key: `undertired:${w.asleep.id}`, push: false,
+        title: `Only ${plDur(Math.round(awakeBefore))} awake — likely undertired`,
+        body: `He usually needs ${plDur(c.ww.min)}–${plDur(c.ww.max)} awake before bed. Bedtime fights are almost always caused by putting him down too early, not too late.`,
+      });
+    }
+  }
+
+  // 🔴 A nap running into the cutoff. Warn 15 min before, like a real heads-up.
+  const runningNap = st.blocks.find((b) => b.running && b.kind === "nap");
+  if (runningNap && nowMin >= cutoffMin - 15) {
+    const past = nowMin >= cutoffMin;
+    out.push({
+      id: "late-nap", sev: "urgent", key: `latenap:${runningNap.id}`, push: true,
+      title: past ? `Wake Leo — it's past ${plFmt(cutoffMin)}` : `Wake Leo by ${plFmt(cutoffMin)}`,
+      body: `A nap past the cutoff spends the sleep pressure you need tonight. It works like a coffee at 6pm.`,
+    });
+  }
+
+  // 🟡 Day sleep is full.
+  if (st.napMins >= c.naps.totalDayMax) out.push({
+    id: "day-cap", sev: "warn", key: `daycap:${dk}`, push: true,
+    title: `Day sleep is full — ${plDur(st.napMins)}`,
+    body: `More naps now usually means a harder bedtime and more night waking. The ${plDur(c.totals.healthy24h[0])}–${plDur(c.totals.healthy24h[1])} norm includes the night.`,
+  });
+
+  // 🟡 Bedtime window is open and he's ready.
+  const bedLo = hhmmToMin(c.night.bedtimeEarliest), bedHi = hhmmToMin(c.night.bedtimeLatest);
+  const nightStartedToday = list.some((e) =>
+    e.type === "sleep" && e.subtype === "night" &&
+    sameDay(new Date(e.start_at), T) && minOfDay(new Date(e.start_at)) >= bedLo - 90);
+  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !nightStartedToday) out.push({
+    id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
+    title: `Bedtime window open`,
+    body: `Crib between ${clockTime(w.opensAt)} and ${clockTime(w.closesAt)}. Start the routine now — calm and a bit later beats fast and too early.`,
+  });
+
+  // 🔵 One nap too many.
+  if (st.napCount > c.naps.maxCount) out.push({
+    id: "extra-nap", sev: "info", key: `napover:${dk}:${st.napCount}`, push: false,
+    title: `That's nap #${st.napCount}`,
+    body: `At ${c.band}, ${c.naps.minCount}–${c.naps.maxCount} naps is the target. Consider holding him to bedtime instead.`,
+  });
+
+  // 🔵 Fragmented day — the pattern behind "he fights bedtime every night".
+  const shortNaps = st.naps.filter((b) => !b.running && b.fullMins < c.naps.minUsefulNap);
+  if (shortNaps.length >= 2) out.push({
+    id: "snack-naps", sev: "info", key: `snack:${dk}:${shortNaps.length}`, push: false,
+    title: `${shortNaps.length} short naps today`,
+    body: `Naps under ${c.naps.minUsefulNap} min drain sleep pressure without restoring much. Expect to need the later end of the bedtime window.`,
+  });
+
+  // 🔵 Night feed spacing — INFORMATION, not a gate. Whether Leo needs a night feed
+  // is a weight-and-pediatrician question; this app doesn't get a vote on it.
+  if (nowMin >= 19 * 60 || nowMin < morningMin) {
+    const lastNight = list
+      .filter((e) => e.type === "breast" || e.type === "bottle")
+      .map((e) => new Date(e.end_at || e.start_at))
+      .filter((d) => d <= T && (T - d) <= 12 * 3600000 && (minOfDay(d) >= 19 * 60 || minOfDay(d) < morningMin))
+      .sort((a, b) => b - a)[0];
+    if (lastNight) out.push({
+      id: "feed-gate", sev: "info", key: `feedgate:${lastNight.getTime()}`, push: false,
+      title: `Last night feed ${clockTime(lastNight)} · ${plDur(Math.round((T - lastNight) / 60000))} ago`,
+      body: `Typical spacing at ${c.band} is around ${plDur(c.night.feedGateMin)}. For reference only — feeding is a weight-and-doctor decision, not a clock decision.`,
+    });
+  }
+
+  // 🔵 Up before morning.
+  if (!w.asleep && w.last && w.last.subtype === "night" && w.last.end_at) {
+    const endAt = new Date(w.last.end_at);
+    const endM = minOfDay(endAt);
+    if (endM >= 270 && endM < morningMin && (T - endAt) < 2 * 3600000) out.push({
+      id: "early-wake", sev: "info", key: `earlywake:${w.last.id}`, push: false,
+      title: `Before ${plFmt(morningMin)} is still night`,
+      body: `Treat it as a night wake — dark, quiet, minimal handling. Morning starts at ${plFmt(morningMin)} with light and voices.`,
+    });
+  }
+
+  // 🔵 He grew. The targets moved. Say so out loud.
+  let seen = null;
+  try { seen = localStorage.getItem(SEEN_MONTH_KEY); } catch (e) {}
+  if (seen !== null && c.month > Number(seen)) {
+    const prev = defaultsForMonth(Number(seen));
+    out.push({
+      id: "month-advance", sev: "info", key: `month:${c.month}`, push: false, action: "settings",
+      title: `Leo turned ${c.month} months — targets updated`,
+      body: `Wake windows ${plDur(prev.ww.min)}–${plDur(prev.ww.max)} → ${plDur(c.ww.min)}–${plDur(c.ww.max)}. Nap cap ${prev.naps.maxCount} → ${c.naps.maxCount}. Tap to review.`,
+    });
+  }
+
+  return out.sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev]);
+}
+
+// ---- Rendering. Never called from render(): a dismiss button rebuilt every second
+// is impossible to tap. (We already paid for that lesson once — see commit 6b6ebb3,
+// "Fix delete confirm wiped by per-second rerender".) The DOM is only touched when
+// the set of visible alerts actually changes.
+let _alertSig = null;
+let _lastUrgent = new Set();
+function renderAlerts(force) {
+  const host = $("leo-alerts");
+  if (!host) return;
+  const dis = dismissedMap();
+  const live = evaluateAlerts().filter((a) => !dis[a.key]).slice(0, 3);
+  const sig = live.map((a) => a.key).join("|");
+  if (!force && sig === _alertSig) return;
+  _alertSig = sig;
+
+  host.innerHTML = "";
+  for (const a of live) {
+    const el = document.createElement("div");
+    el.className = `alert alert-${a.sev}`;
+    el.innerHTML = `<div class="alert-body"><div class="alert-title"></div><div class="alert-text"></div></div>`;
+    el.querySelector(".alert-title").textContent = a.title;
+    el.querySelector(".alert-text").textContent = a.body;
+    if (a.action === "settings") {
+      el.classList.add("tappable");
+      el.addEventListener("click", (ev) => { if (!ev.target.closest(".alert-x")) switchTab("settings"); });
+    }
+    const x = document.createElement("button");
+    x.className = "alert-x"; x.textContent = "✕"; x.setAttribute("aria-label", "Dismiss");
+    x.addEventListener("click", () => dismissAlert(a.key));
+    el.appendChild(x);
+    host.appendChild(el);
+  }
+
+  // The audible alarm used to fire from the old wake card at a flat 90 minutes.
+  // It now rings once when a genuinely urgent alert first appears.
+  const urgent = new Set(live.filter((a) => a.sev === "urgent").map((a) => a.key));
+  for (const k of urgent) if (!_lastUrgent.has(k)) { fireAlarm(); break; }
+  _lastUrgent = urgent;
+}
+
+// ============================================================
 //  7. RENDER — runs every second to keep live timers fresh
 // ============================================================
 // Per-second tick: only the live timers. NOT the log/summary — rebuilding the
 // log every second was wiping out the "Delete/Keep" confirm before you could tap.
+const tabOpen = (name) => { const el = $("tab-" + name); return !!el && !el.classList.contains("hidden"); };
+
 function render() {
-  renderWake();
-  renderLeoWake();     // new Leo home headline (same math, its own elements)
-  renderDayBar();      // new Leo home day-bar (blocks + now marker + summary)
-  renderLive();
-  renderFeedButtons();
-  renderSleepButton();
-  renderSinceFeed();
-  renderNextFeed();
-  renderFeedAwake();
-  renderAgo();
-  renderTopBanner();
-  renderClockNow();
+  renderTopBanner();                       // sticky — the one timer visible on every tab
+  // Only redraw what's actually on screen. This used to run twelve renderers a
+  // second against hidden tabs — 86,400 pointless DOM writes a day, on a phone.
+  if (tabOpen("leo")) {
+    renderLeoWake();
+    tickNow();                             // day-bar: moves ONE element, nothing else
+  }
+  if (tabOpen("home")) {
+    renderLive();
+    renderFeedButtons();
+    renderSleepButton();
+    renderSinceFeed();
+    renderNextFeed();
+    renderFeedAwake();
+    renderAgo();
+    renderClockNow();
+  }
+  // Sleep training: tick ONLY the minute counter. Rebuilding that card would
+  // destroy the "He's asleep" button under a tired thumb.
+  if (tabOpen("sleep")) {
+    const el = $("tr-live-min"), b = openBedtime();
+    if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
+  }
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -377,61 +1078,19 @@ function render() {
 function renderTopBanner() {
   const el = $("topbanner");
   if (!el) return;
-  const sleeping = openSleep();
-  if (sleeping) {
+  // On the Leo tab the headline card says all of this, ten pixels lower.
+  if (tabOpen("leo")) { el.classList.add("hidden"); return; }
+  const w = wakeState();
+  if (w.asleep) {
     el.className = "topbanner zone-green";
-    el.textContent = `💤 Asleep ${dur(now() - new Date(sleeping.start_at))}`;
+    el.textContent = `${w.asleep.subtype === "night" ? "🌙" : "💤"} Asleep ${dur(now() - new Date(w.asleep.start_at))}`;
     el.classList.remove("hidden");
     return;
   }
-  const last = lastEndedSleep();
-  if (!last) { el.classList.add("hidden"); return; }
-  const wokeAt = new Date(last.end_at);
-  const mins = (now() - wokeAt) / 60000;
-  let zone = "green";
-  if (mins > ZONE.orange) zone = "red";
-  else if (mins > ZONE.amber) zone = "orange";
-  else if (mins >= ZONE.green) zone = "amber";
-  const closesAt = new Date(wokeAt.getTime() + WAKE_TARGET * 60000);
-  el.className = `topbanner zone-${zone}`;
-  el.textContent = `⏱ Awake ${dur(now() - wokeAt)} · window closes ${clockTime(closesAt)}`;
+  if (!w.wokeAt) { el.classList.add("hidden"); return; }
+  el.className = `topbanner zone-${w.zone}`;
+  el.textContent = `⏱ Awake ${dur(now() - w.wokeAt)} · window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}`;
   el.classList.remove("hidden");
-}
-
-function renderWake() {
-  const card = $("wake-card");
-  const sleeping = openSleep();
-  if (sleeping) {
-    // Asleep — show how long he's been sleeping.
-    card.className = "card wake-card zone-green";
-    $("wake-eyebrow").textContent = "Asleep for 💤";
-    $("wake-time").textContent = dur(now() - new Date(sleeping.start_at));
-    $("wake-status").textContent = "Tap End sleep when he wakes";
-    return;
-  }
-  $("wake-eyebrow").textContent = "Awake for";
-  const last = lastEndedSleep();
-  if (!last) {
-    $("wake-time").textContent = "—";
-    $("wake-status").textContent = "Log a sleep to start the wake window";
-    card.className = "card wake-card zone-green";
-    return;
-  }
-  const wokeAt = new Date(last.end_at);
-  const mins = (now() - wokeAt) / 60000;
-  $("wake-time").textContent = dur(now() - wokeAt);
-
-  const closesAt = new Date(wokeAt.getTime() + WAKE_TARGET * 60000);
-  $("wake-status").textContent = `Window closes at ${clockTime(closesAt)}`;
-
-  let zone = "green";
-  if (mins > ZONE.orange) zone = "red";
-  else if (mins > ZONE.amber) zone = "orange";
-  else if (mins >= ZONE.green) zone = "amber";
-  card.className = `card wake-card zone-${zone}`;
-
-  // Fire the alarm once when we cross the 90-minute target.
-  if (mins >= WAKE_TARGET && !alerted) { alerted = true; fireAlarm(); }
 }
 
 function renderLive() {
@@ -480,8 +1139,8 @@ function renderSinceFeed() {
 function nextFeedAt() {
   const f = lastFeed();
   if (!f) return null;
-  const t = targetsForAge(ageMonths());
-  const avgPerDay = (t.feedLow + t.feedHigh) / 2;
+  const fd = cfgNow().feeds;
+  const avgPerDay = (fd.perDayMin + fd.perDayMax) / 2;
   const intervalMs = ((24 * 60) / avgPerDay) * 60000;
   return new Date(new Date(f.end_at || f.start_at).getTime() + intervalMs);
 }
@@ -554,41 +1213,15 @@ function renderFeedAwake() {
 function renderSummary() {
   const today = events.filter((e) => isToday(e.start_at));
   const feeds = today.filter((e) => e.type === "breast" || e.type === "bottle").length;
-
-  let sleepMs = 0, feedMs = 0, naps = 0;
+  let feedMs = 0;
   for (const e of today) {
-    if (e.type === "sleep" && e.subtype === "nap" && e.end_at) naps++;
-    if (!e.end_at) continue;
-    const span = new Date(e.end_at) - new Date(e.start_at);
-    if (e.type === "sleep") sleepMs += span;
-    if (e.type === "breast") feedMs += span;
+    if (e.type === "breast" && e.end_at) feedMs += new Date(e.end_at) - new Date(e.start_at);
   }
+  // Same derivation the Leo tab uses, so the two screens can't print different totals.
+  const st = sleepDayStats();
   $("t-feeds").textContent = feeds;
-  $("t-sleep").textContent = (sleepMs / 3600000).toFixed(1) + "h";
+  $("t-sleep").textContent = (st.sleptMs / 3600000).toFixed(1) + "h";
   $("t-feedtime").textContent = Math.round(feedMs / 60000) + "m";
-  renderTargets(sleepMs / 3600000, naps, feeds);
-}
-
-// Age-appropriate targets vs. today's actuals (general guideline, not medical advice).
-// Visual progress: a fill-bar for sleep hours, dot pips for naps + feeds. Each fills toward
-// the daily goal and turns green ("met") once it reaches the low end of the range.
-function renderTargets(sleepH, naps, feeds) {
-  const el = $("targets-line");
-  if (!el) return;
-  const m = ageMonths();
-  const t = targetsForAge(m);
-
-  // Sleep: a continuous bar filling toward the low end of the range.
-  const sleepPct = Math.min(100, (sleepH / t.sleepLow) * 100);
-  const sleepRow = barRow("Sleep", sleepPct, `${sleepH.toFixed(1)} / ${t.sleepLow}–${t.sleepHigh}h`, sleepH >= t.sleepLow);
-
-  // Naps + feeds: count-based pips (filled ● up to the high end, empty ○ for the rest).
-  const napRow  = pipRow("Naps", naps, t.napLow, t.napHigh, `${naps} of ${t.napLow}–${t.napHigh}`);
-  const feedRow = pipRow("Feeds", feeds, t.feedLow, t.feedHigh, `${feeds} of ${t.feedLow}–${t.feedHigh}`);
-
-  el.innerHTML =
-    `<div class="targets-head">Target (${m} mo): ${t.sleepLow}–${t.sleepHigh}h · ${t.napLow}–${t.napHigh} naps · ${t.feedLow}–${t.feedHigh} feeds</div>` +
-    sleepRow + napRow + feedRow;
 }
 
 function barRow(label, pct, value, met) {
@@ -610,7 +1243,7 @@ function pipRow(label, count, low, high, value) {
     `</div>`;
 }
 
-const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨" };
+const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨", bedtime: "🌙" };
 
 function renderLog(listId) {
   const list = $(listId || "log-list");
@@ -635,6 +1268,12 @@ function renderLog(listId) {
     } else if (e.type === "sleep") {
       title = `Sleep (${e.subtype || "?"})`;
       meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)}` : `${clockTime(start)} – running`;
+    } else if (e.type === "bedtime") {
+      const r = bedtimeRounds(e);
+      title = isRescue(e) ? "Bedtime · rescue night" : `Bedtime settling · ${r} round${r === 1 ? "" : "s"}`;
+      meta = e.end_at
+        ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${clockMins(span / 60000)} to asleep`
+        : `${clockTime(start)} – settling now`;
     } else if (e.type === "milestone") {
       title = e.note || "Milestone";
     }
@@ -766,12 +1405,13 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "leo")     { renderLeoWake(); renderDayBar(); renderLeoData(); }
-  if (name === "grow")    renderGrowth();      // also (re)builds the charts now the canvas is visible
-  if (name === "food")    renderFood();
-  if (name === "planner") renderPlanner();
-  if (name === "sleep")   renderSleep();
-  if (name === "ask")     scrollChat();
+  if (name === "leo")      { renderLeoWake(); renderRhythm(); renderLeoData(); renderAlerts(true); }
+  if (name === "grow")     renderGrowth();      // also (re)builds the charts now the canvas is visible
+  if (name === "food")     renderFood();
+  if (name === "planner")  renderPlanner();
+  if (name === "sleep")    renderSleep();
+  if (name === "settings") renderSettings();
+  if (name === "ask")      scrollChat();
 }
 
 // ============================================================
@@ -779,17 +1419,8 @@ function switchTab(name) {
 //  Predictive (reads `events` for auto-fill; writes nothing).
 // ============================================================
 
-// Age bands (population guides). Keyed by age in weeks (maxW).
-const BANDS = [
-  { maxW:6,    label:"Newborn · 0–6 wk", wwMin:35,  wwMax:60,  wwLast:60,  naps:6, napLen:45, feeds:8, solids:false },
-  { maxW:13,   label:"6–13 wk",          wwMin:60,  wwMax:90,  wwLast:90,  naps:5, napLen:45, feeds:7, solids:false },
-  { maxW:17,   label:"3–4 mo",           wwMin:75,  wwMax:120, wwLast:120, naps:4, napLen:45, feeds:6, solids:false },
-  { maxW:26,   label:"4–6 mo",           wwMin:120, wwMax:165, wwLast:165, naps:3, napLen:60, feeds:6, solids:false },
-  { maxW:39,   label:"6–9 mo",           wwMin:135, wwMax:180, wwLast:180, naps:3, napLen:75, feeds:5, solids:true },
-  { maxW:52,   label:"9–12 mo",          wwMin:165, wwMax:240, wwLast:210, naps:2, napLen:75, feeds:4, solids:true },
-  { maxW:78,   label:"12–18 mo",         wwMin:240, wwMax:300, wwLast:270, naps:1, napLen:120,feeds:3, solids:true },
-  { maxW:9999, label:"18 mo+",           wwMin:300, wwMax:360, wwLast:330, naps:1, napLen:120,feeds:3, solids:true },
-];
+// The Planner's own age table used to live here. It is gone — see plCurrentBand(),
+// which now translates the one sleep model into the shape the Planner speaks.
 const WHY = [
   ["Why wake windows?","Adenosine (sleep pressure) builds the whole time Leo is awake. Too little before a nap and he won't settle; too much and he gets a cortisol surge — wired, not sleepy. The window just manages that pressure."],
   ["Why is the last window the longest?","Maximum sleep pressure right before bed gives the deepest, longest first night stretch and prevents 'false starts' where he pops awake 30–45 min after going down."],
@@ -803,7 +1434,6 @@ const plToMin = (s) => { const [h,m]=s.split(":").map(Number); return h*60+m; };
 const plFmt = (min) => { min=((min%1440)+1440)%1440; let h=Math.floor(min/60),m=min%60; const ap=h>=12?"PM":"AM"; h=h%12||12; return `${h}:${pad(m)} ${ap}`; };
 const plDur = (min) => { const h=Math.floor(min/60),m=min%60; return h?`${h}h${m?" "+m+"m":""}`:`${m}m`; };
 const plIcon = (k) => ({wake:"☀️",feed:"🍼",nap:"💤",bed:"🌙"}[k]||"•");
-const plBandFor = (weeks) => BANDS.find((b)=>weeks<b.maxW) || BANDS[BANDS.length-1];
 
 // Age in whole weeks off the app's BIRTH constant.
 function ageWeeks() { return Math.max(0, Math.floor((now() - BIRTH) / 6048e5)); } // 7*864e5 ms/week
@@ -870,7 +1500,21 @@ const planner = {
 };
 let plWakeTouched = false; // false → re-seed wake from today's log on each render
 
-function plCurrentBand(){ return plBandFor(ageWeeks()); }
+// Adapter, not a second table: the Planner keeps its own vocabulary (wwMin/napLen/…)
+// but every number behind it comes from the one sleep model.
+function plCurrentBand(){
+  const c = cfgNow();
+  return {
+    label:  c.band,
+    wwMin:  c.ww.min,
+    wwMax:  c.ww.max,
+    wwLast: c.ww.lastOfDay,
+    naps:   c.naps.maxCount,
+    napLen: Math.round(c.naps.totalDayMax / c.naps.maxCount),
+    feeds:  c.feeds.perDayMax,
+    solids: c.month >= 6,
+  };
+}
 function plEffectiveWw(){ const b=plCurrentBand(); const def=Math.round((b.wwMin+b.wwMax)/2); return planner.ww==null?def:Math.min(Math.max(planner.ww,b.wwMin),b.wwMax); }
 
 // Morning wake from real data: earliest sleep that ENDED today (prefer night sleep), else 06:30.
@@ -1160,10 +1804,492 @@ const SLEEP_CITE = `
 
 const SLEEP_FOOTER = `<div class="sl-footer"><p class="sl-heart">For Emma &amp; Leo 🤍</p><p>A plan, not a rulebook. Leo leads — we adjust with him, together.</p></div>`;
 
-function renderSleep(){
-  $("sleep-content").innerHTML =
-    sleepBannerHTML() + SLEEP_REASSURE + SLEEP_GATE + SLEEP_BODY +
-    sleepProgressHTML() + SLEEP_FLAGS + SLEEP_CITE + SLEEP_FOOTER;
+// ============================================================
+//  10j. SLEEP TRAINING — the method, live
+// ============================================================
+// Everything below is Mike & Emma's actual programme, worked out night by night
+// from 28 July 2026 onward. It used to live in six separate HTML guides that kept
+// superseding each other. This is the one copy.
+//
+// Deliberately built for 2am: sub-tabs so nothing needs scrolling, the ladder
+// always one tap away, and every number computed from real logged data rather
+// than remembered.
+
+const TRAIN_KEY = "leo_train_view";
+let trainView = (() => { try { return localStorage.getItem(TRAIN_KEY) || "tonight"; } catch (e) { return "tonight"; } })();
+const GATE_MINS = 15;      // bedtime ≤15 min …
+const GATE_NIGHTS = 4;     // … for 4 nights running unlocks Phase 2
+
+// Completed bedtime sessions, newest first.
+function bedtimeHistory(limit) {
+  return events
+    .filter((e) => e.type === "bedtime" && e.end_at)
+    .sort((a, b) => new Date(b.start_at) - new Date(a.start_at))
+    .slice(0, limit || 14)
+    .map((e) => ({
+      e,
+      at: new Date(e.start_at),
+      mins: Math.max(0, Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000)),
+      rounds: bedtimeRounds(e),
+      rescue: isRescue(e),
+    }));
+}
+
+// Consecutive nights under the gate, counting back. Rescue nights are SKIPPED,
+// not counted and not breaking — a night he was in pain says nothing about the
+// method, and breaking the streak over it is how people quit.
+function bedtimeStreak() {
+  let streak = 0;
+  for (const n of bedtimeHistory(30)) {
+    if (n.rescue) continue;
+    if (n.mins <= GATE_MINS) streak++;
+    else break;
+  }
+  return streak;
+}
+const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
+const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
+
+// When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
+// schedule — nobody wakes him to feed.
+function feedGateAt(t) {
+  const T = t || now();
+  const f = events
+    .filter((e) => (e.type === "breast" || e.type === "bottle"))
+    .map((e) => new Date(e.end_at || e.start_at))
+    .filter((d) => d <= T)
+    .sort((a, b) => b - a)[0];
+  if (!f) return null;
+  return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
+}
+
+// ---------- Sub-tab: TONIGHT ----------
+function trainTonightHTML() {
+  const cfg = cfgNow();
+  const st = sleepDayStats();
+  const proj = projectTonight(cfg, st);
+  const b = openBedtime();
+  const gate = feedGateAt();
+  const streak = bedtimeStreak();
+  const nights = trainingNights();
+
+  // Live bedtime session — the only interactive part of the whole tab.
+  let session;
+  if (b) {
+    const mins = Math.round((now() - new Date(b.start_at)) / 60000);
+    const rounds = bedtimeRounds(b);
+    session = `<div class="tr-live">
+      <div class="tr-live-head">In the crib since <b>${clockTime(new Date(b.start_at))}</b></div>
+      <div class="tr-live-num"><span id="tr-live-min">${mins}</span><small>min</small> <span class="tr-live-r">round ${rounds}</span></div>
+      <p class="tr-live-note">${mins <= GATE_MINS
+        ? "Under 15 minutes so far — this is a gate night if he goes down now."
+        : "Over 15 minutes. Still fine — rounds matter more than the clock tonight."}</p>
+      <div class="tr-live-btns">
+        <button id="tr-asleep" class="btn btn-sleep">😴 He's asleep</button>
+        <button id="tr-round" class="btn btn-ghost">+ Another round</button>
+      </div>
+      <button id="tr-cancel" class="leo-fixlink">✕ cancel — he didn't go down</button>
+    </div>`;
+  } else if (openSleep()) {
+    session = `<div class="tr-live done"><div class="tr-live-head">He's down. 🤍</div>
+      <p class="tr-live-note">Any wake from here: check the clock against the feed gate, then run the ladder.</p></div>`;
+  } else {
+    session = `<div class="tr-live">
+      <div class="tr-live-head">Bedtime</div>
+      <p class="tr-live-note">Tap the moment he goes <b>into the crib</b> — not when he falls asleep. The gap between the two is the number this whole plan is judged on.</p>
+      <button id="tr-start" class="btn btn-sleep btn-block">🌙 Into the crib</button>
+    </div>`;
+  }
+
+  const target = proj
+    ? `<b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - 25 * 60000))}</b>`
+    : "log a nap and this fills in";
+
+  return session + `
+  <div class="tr-plan">
+    <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
+    <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
+      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last feed ${clockTime(gate.last)})</span>` : "no feed logged yet"
+    }</span></div>
+    <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
+  </div>
+
+  <div class="tr-shift">
+    <div class="tr-shift-h">Whose wake is it</div>
+    <div class="tr-shift-grid">
+      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake under 3 hours. Ladder only — no boob, no exceptions on a healthy night.</span></div>
+      <div class="tr-shift-c emma"><b>Emma</b><span>Only real feeds, 3+ hours after the last one. Otherwise earplugs — the rest is his.</span></div>
+    </div>
+    <p class="tr-shift-n">He can smell the milk on Emma, so he escalates harder at her for a wake that isn't hunger. Agree the two windows out loud <b>before 7pm</b>. Never renegotiate at 2am in the hallway — review over coffee at 8.</p>
+  </div>
+
+  <div class="tr-cue">
+    <div class="tr-cue-h">Green zone — put him down here</div>
+    <div class="tr-cue-g">
+      <span class="tr-cue-i">Slow blinks</span><span class="tr-cue-i">Heavy, loose body</span><span class="tr-cue-i">Faraway gaze</span>
+    </div>
+    <p class="tr-cue-t"><b>The test:</b> if his eyes crack open when he touches the mattress, you didn't fail — you got it exactly right. <b>Too late</b> = eyes closed 30+ seconds, breathing deep and even. Then the crib gets a sleeping baby, he surfaces, and the panic is the mismatch.</p>
+  </div>
+
+  <div class="sl-gate"><b>The one line:</b> bouncing to <b>calm</b> is always allowed — that's rung 3. Bouncing all the way to <b>sleep</b> is the prop. The bounce is the fire extinguisher, not the bed.</div>`;
+}
+
+// ---------- Sub-tab: LADDER ----------
+const TRAIN_LADDER = `
+  <div class="tr-triage">
+    <div class="tr-triage-h">First, listen. The sound picks the rung.</div>
+    <div class="tr-tr-row calm"><span class="tr-tr-s">Active, babbling, squirming</span><span class="tr-tr-a">Do nothing. Stay out of sight.</span></div>
+    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 1–2 minutes. Hands off.</span></div>
+    <div class="tr-tr-row cry"><span class="tr-tr-s">Real crying, climbing</span><span class="tr-tr-a">Start at rung 2.</span></div>
+    <div class="tr-tr-row scream"><span class="tr-tr-s">Hard screaming, panic</span><span class="tr-tr-a">Go now. Straight to rung 3.</span></div>
+  </div>
+
+  <div class="tr-ladder">
+    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 1–2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power in week 1 and then suddenly works around nights 4–6. That's the signal the crib association has flipped.</em></div></div></div>
+    <div class="tr-rung"><div class="tr-rn">3</div><div><div class="tr-rt">Pick up and calm — fully</div><div class="tr-rd">Held <b>still</b> against your chest, in the dark. Not bouncing, not walking laps. No time limit: fully calm means crying stopped, body loose and heavy, breathing slow. Usually 5–10 boring minutes.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">4</div><div><div class="tr-rt">Back down awake</div><div class="tr-rd">Calm but <b>not asleep</b>. Chupón in, hand on chest a few seconds, then withdraw. He restarts the second he touches the mattress? Normal. Rung 2 first, not straight back to arms.</div></div></div>
+    <div class="tr-rung last"><div class="tr-rn">5</div><div><div class="tr-rt">Repeat, identically</div><div class="tr-rd">The number of rounds isn't the score — <b>sameness</b> is. 5–8 rounds on a night-1 wake is normal. Every identical round teaches him the deal doesn't change.</div></div></div>
+  </div>
+
+  <div class="tr-override">
+    <div class="tr-ov-h">⚠️ The override</div>
+    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, calm him completely. Holding, swaying, chupón, all fine.</p>
+  </div>
+
+  <div class="tr-notcio">
+    <div class="tr-ov-h">This is not leaving him to cry</div>
+    <p>He gets a response <b>every single time</b>, and arms every time he truly needs them. The only thing withheld on an under-3-hour wake is the boob — because that wake is habit, not hunger. Crying through a change with a parent right there leaves no trace; that's exactly what the 5-year follow-up measured.</p>
+    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. If a night is going to collapse, let it collapse completely into a comfort night and restart clean tomorrow.</p>
+  </div>
+
+  <div class="tr-dont">
+    <div class="tr-ov-h">Never</div>
+    <ul>
+      <li><b>Never put a crying baby in the crib.</b> The crib is only ever for a calm baby. Calm first, then down.</li>
+      <li>Never bounce all the way to sleep.</li>
+      <li>Never pick up automatically at every wake — the sound decides.</li>
+      <li>Never sneak away. Same phrase every time: <em>"ya vengo, Leo."</em></li>
+      <li>Never let the boob be the last step before the crib.</li>
+    </ul>
+  </div>`;
+
+// ---------- Sub-tab: FEEDS ----------
+function trainFeedsHTML() {
+  const cfg = cfgNow();
+  const gate = feedGateAt();
+  const fr = feedRatio7d();
+  const g = cfg.night.feedGateMin;
+  return `
+  <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
+    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No feed logged yet"}</div>
+    ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
+      ? `since ${clockTime(gate.opens)}`
+      : `opens ${clockTime(gate.opens)}`}</div>
+    <p class="tr-gate-n">Last feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+      ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
+      : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
+  </div>
+
+  <div class="tr-rule">
+    <div class="tr-rule-h">${plDur(g)} is a <em>minimum gate</em>, not a schedule</div>
+    <p>Nobody wakes him to feed. If he doesn't wake, nothing happens and the window just stays open. Feed windows are <b>ceilings, not appointments</b> — the best version of tonight is one feed, not three.</p>
+  </div>
+
+  <div class="tr-two">
+    <div class="tr-two-c yes"><b>${plDur(g)}+ since a full feed</b><span>Feed him. Dark, boring, no talking, straight back in the crib awake. If he takes it eagerly and drains it, that was real hunger and the rule worked.</span></div>
+    <div class="tr-two-c no"><b>Under ${plDur(g)}</b><span>Ladder. No boob. The tell for a comfort feed: takes 20–30 ml and dozes off — that's a pacifier with extra steps.</span></div>
+  </div>
+
+  ${nightFeedHTML(cfg)}
+
+  <div class="tr-reverse ${fr.flag ? "hot" : ""}">
+    <div class="tr-ov-h">Reverse cycling — the live problem</div>
+    <p><b>${Math.round(fr.nightPct)}%</b> of his feeds over the last 7 days were between 7pm and 6am.${fr.flag ? " That's above the 35% line." : " Under the 35% line."}</p>
+    <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
+    <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
+    <ul>
+      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. At 6 months the day is interesting and he'll skip meals to look at things, then collect at night.</li>
+      <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
+      <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
+      <li>Optional: a dream feed around 10:30pm banks a full feed at a time <em>you</em> choose.</li>
+    </ul>
+    <p class="tr-signal">The signal it's working: a night feed shrinking to a 4-minute snack on its own. That one is becoming droppable. Expect 3–7 days.</p>
+  </div>
+
+  <div class="sl-gate"><b>Night weaning is a separate project.</b> Whether and when to drop night feeds is a weight-and-doctor decision, not a sleep decision — his 150g/week gain is the metric that gates it. You can teach Leo to fall asleep on his own <em>while keeping every feed.</em> Dr. León Magaña has the final word.</div>`;
+}
+
+// ---- Night feeds, by size. The question that decides what to do next is not
+// how many he took but how big they were: full feeds mean real calories have
+// moved into the night (fix the days), a shrinking feed means that one has
+// become habit and is ready to drop.
+function nightFeedHTML(cfg) {
+  const c = cfg || cfgNow();
+  const hist = nightFeedHistory(7, c);
+  const split = milkSplit7d(c);
+  const last = hist.find((n) => n.feeds.length);
+
+  if (!last) return `<div class="tr-nf"><div class="tr-ov-h">Night feeds</div>
+    <p class="tr-empty">No night feeds logged yet. Log bottles with their ml and time the breast feeds, and the size trend builds here.</p></div>`;
+
+  const rows = last.feeds.map((f) => {
+    const tag = f.kind === "full" ? "full feed" : f.kind === "snack" ? "snack" : "part feed";
+    const drop = f.kind === "snack" ? `<span class="tr-drop">ready to drop</span>` : "";
+    return `<div class="tr-nf-row ${f.kind}"><span class="tr-nf-t">${clockTime(f.at)}</span>` +
+           `<span class="tr-nf-s">${f.label}</span><span class="tr-nf-k">${tag}</span>${drop}</div>`;
+  }).join("");
+
+  // The trend that matters: is the biggest night feed getting smaller?
+  const sized = hist.filter((n) => n.feeds.length).slice(0, 5).reverse();
+  const strip = sized.map((n) => {
+    const worst = n.feeds.reduce((a, f) => (f.kind === "full" ? 2 : f.kind === "partial" ? 1 : 0) >
+      (a ? (a.kind === "full" ? 2 : a.kind === "partial" ? 1 : 0) : -1) ? f : a, null);
+    const k = worst ? worst.kind : "snack";
+    return `<span class="tr-nf-col"><span class="tr-nf-dot ${k}"></span>` +
+           `<span class="tr-nf-n">${n.feeds.length}</span>` +
+           `<span class="tr-nf-d">${["S","M","T","W","T","F","S"][n.date.getDay()]}</span></span>`;
+  }).join("");
+
+  const anyFull = last.full > 0;
+  const verdict = anyFull
+    ? `<p class="tr-nf-v hunger"><b>Still real hunger.</b> ${last.full} full feed${last.full === 1 ? "" : "s"} last night — those calories have genuinely moved into the night. Don't withhold them; move the calories back into the day and the night demand collapses on its own, usually in 3–7 days.</p>`
+    : last.snack
+      ? `<p class="tr-nf-v drop"><b>That's the signal.</b> ${last.snack} of last night's feeds ${last.snack === 1 ? "was a snack" : "were snacks"} — sucking to sleep, not eating. A feed that shrinks on its own is becoming droppable: next time that wake comes inside the gate, it gets the ladder.</p>`
+      : `<p class="tr-nf-v">Part feeds — in between. Watch whether they shrink or grow over the next few nights.</p>`;
+
+  return `<div class="tr-nf">
+    <div class="tr-ov-h">Last night's feeds</div>
+    <div class="tr-nf-list">${rows}</div>
+    ${verdict}
+    ${strip ? `<div class="tr-nf-strip">${strip}</div>
+    <p class="tr-nf-leg"><i class="tr-nf-dot full"></i>full <i class="tr-nf-dot partial"></i>part <i class="tr-nf-dot snack"></i>snack · biggest feed of each night, number = how many</p>` : ""}
+    <div class="tr-nf-split">
+      <div><span class="tr-nf-big">${split.mlPct != null ? Math.round(split.mlPct) + "%" : "—"}</span><span class="tr-nf-lab">of bottled milk taken at night<br><span class="tr-dim">${split.nightMl} of ${split.nightMl + split.dayMl} ml</span></span></div>
+      <div><span class="tr-nf-big">${split.minPct != null ? Math.round(split.minPct) + "%" : "—"}</span><span class="tr-nf-lab">of breast minutes at night<br><span class="tr-dim">${split.nightMin} of ${split.nightMin + split.dayMin} min</span></span></div>
+    </div>
+    <p class="tr-nf-leg">Bottles and breast are counted separately on purpose — there's no honest way to convert minutes into millilitres, and a made-up conversion would hide exactly the shift you're watching for.</p>
+  </div>`;
+}
+
+// ---------- Sub-tab: PROGRESS ----------
+function trainProgressHTML() {
+  const hist = bedtimeHistory(7);
+  const streak = bedtimeStreak();
+  const p = sleepProgress();
+  const unlocked = phase2Unlocked();
+
+  const bars = hist.length
+    ? `<div class="tr-hist">` + hist.slice().reverse().map((n) => {
+        const h = Math.min(100, (n.mins / 45) * 100);
+        const cls = n.rescue ? "rescue" : n.mins <= GATE_MINS ? "good" : "over";
+        return `<span class="tr-hb"><span class="tr-hbar"><span class="tr-hfill ${cls}" style="height:${Math.max(6, h)}%"></span></span>` +
+               `<span class="tr-hnum">${n.rescue ? "–" : n.mins}</span>` +
+               `<span class="tr-hday">${["S","M","T","W","T","F","S"][n.at.getDay()]}</span></span>`;
+      }).join("") + `</div>
+      <p class="tr-hist-n">Minutes from crib to asleep, last ${hist.length} night${hist.length === 1 ? "" : "s"}. Green = under ${GATE_MINS}. Grey = rescue night (doesn't count).</p>`
+    : `<p class="tr-empty">No bedtimes logged yet. Tap <b>Into the crib</b> on the Tonight tab and the trend starts building.</p>`;
+
+  return `
+  <div class="tr-gatebox ${unlocked ? "on" : ""}">
+    <div class="tr-gate-h">${unlocked ? "🎉 Phase 2 unlocked" : "Phase 2 gate"}</div>
+    <div class="tr-pips">${"●".repeat(Math.min(streak, GATE_NIGHTS))}${"○".repeat(Math.max(0, GATE_NIGHTS - streak))}</div>
+    <p class="tr-gate-n">${unlocked
+      ? `Bedtime has been under ${GATE_MINS} minutes ${streak} nights running. The morning nap can move to the crib — see the Method tab.`
+      : `${streak} of ${GATE_NIGHTS} nights under ${GATE_MINS} minutes. Don't start naps yet — just keep counting.`}</p>
+  </div>
+
+  ${bars}
+
+  <div class="tr-signs">
+    <div class="tr-sign good">
+      <div class="tr-ov-h">It's working when…</div>
+      <ul>
+        <li>He does the last bit of falling asleep <b>in the crib</b> — this is the #1 metric</li>
+        <li>Rounds trend down across nights</li>
+        <li>His longest stretch grows${p.longest ? ` <span class="tr-live-r">now ${plDur(Math.round(p.longest / 60000))}</span>` : ""}</li>
+        <li>Crying gets shorter <em>within</em> a night</li>
+        <li>He's a happy baby during the day</li>
+      </ul>
+    </div>
+    <div class="tr-sign warn">
+      <div class="tr-ov-h">Watch out for…</div>
+      <ul>
+        <li>Bedtime getting <b>longer</b> across a whole week</li>
+        <li>The pelota creeping back in — it's retired</li>
+        <li>Calming sessions getting longer instead of shorter (30 seconds, not 5 minutes)</li>
+        <li>Pain-type crying on clean-food nights</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tr-judge">
+    <div class="tr-ov-h">How to judge it</div>
+    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never evaluate before night 5.</p>
+    <p class="tr-notwin"><b>And success at 6 months is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most cycle wakes, eats when he's actually hungry. Seven-to-seven silence is a September conversation, after Dr. León clears night weaning.</p>
+  </div>`;
+}
+
+// ---------- Sub-tab: RESCUE ----------
+function trainRescueHTML() {
+  const b = tonightsBedtime();
+  const marked = b && isRescue(b);
+  return `
+  <div class="tr-vs">
+    <div class="tr-vs-c"><b>Protest</b><span>Calms when you hold him. Settles within minutes in your arms. Restarts when he's put down.</span></div>
+    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 30+ minutes inconsolable in your arms. Arching, legs pulled up.</span></div>
+  </div>
+  <p class="tr-vs-n">That's the whole test. <b>Protest calms when held; pain doesn't.</b> The training rules assume a comfortable baby — the moment he isn't one, the rules are suspended and you just comfort your son. Bounce, boob, chest, whatever works.</p>
+
+  <div class="tr-check">
+    <div class="tr-ov-h">The 10-minute checklist</div>
+    <ol>
+      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time.</li>
+      <li><b>Big burp.</b> A full 3–4 minutes, not 30 seconds. Upright on your shoulder, belly against you, firm pats. Also seated on your forearm, leaning forward.</li>
+      <li><b>Nose.</b> Blocked = he can't settle lying flat. Sterimar, wait a minute, suction only if it's clearly blocking.</li>
+      <li><b>Gums.</b> Finger sweep for a hard ridge or bulge. Drool rash, red cheeks, ear-rubbing.</li>
+      <li><b>Diaper, too hot, too cold.</b></li>
+    </ol>
+  </div>
+
+  <div class="sl-flag red">
+    <div class="sl-ft">Straight to Dr. León Magaña — 987-871-8123</div>
+    <ul>
+      <li>Fever ≥38°C at his age</li>
+      <li>Vomiting</li>
+      <li>Inconsolable past ~1 hour, or through a feed plus 20–30 min of full comfort</li>
+      <li>Arching and pulling legs up, repeatedly</li>
+      <li>Anything that feels off to either of you — trust that</li>
+    </ul>
+  </div>
+
+  <div class="tr-dairy">
+    <div class="tr-ov-h">Check the food first</div>
+    <p>Twice now a bad night has traced straight back to dairy — the lasagna pouch was the clearest. With his cow's-milk protein history, <b>read every label</b>: leche, queso, mantequilla, suero/whey, caseína. New foods at home, in the morning, one at a time. Dairy waits for Dr. León.</p>
+    <p>A repeating <em>food → bad night</em> pattern is data, not noise. Three logged examples turns the appointment from "he sleeps badly sometimes" into something the doctor can actually act on.</p>
+  </div>
+
+  <div class="tr-mark">
+    <p>${marked
+      ? "Tonight is marked as a <b>rescue night</b>. It won't count against the streak."
+      : "If tonight stops being sleep training, say so here. Rescue nights are skipped by the streak, not counted against it."}</p>
+    <button id="tr-rescue" class="btn ${marked ? "btn-sleep active" : "btn-ghost"} btn-block">${marked ? "✓ Marked as a rescue night — undo" : "Mark tonight as a rescue night"}</button>
+  </div>`;
+}
+
+// ---------- Sub-tab: METHOD ----------
+function trainMethodHTML() {
+  const cfg = cfgNow();
+  const unlocked = phase2Unlocked();
+  const streak = bedtimeStreak();
+  return sleepBannerHTML() + `
+  <h2>The one idea behind all of it</h2>
+  <div class="sl-card">
+    <p>Around 4 months a baby's sleep matures into <span class="sl-big">cycles</span> of about 50–60 minutes, and Leo briefly surfaces between them. <b>Everyone does this, adults too</b> — we just roll over and drift back without remembering.</p>
+    <p>The whole goal is helping Leo do the same. However he falls asleep at bedtime is the reference his brain checks at every cycle transition all night. If that's the bottle or our arms, he needs us to recreate it at 2am. Falling asleep <em>by himself at bedtime</em> is what lets him resettle by himself at 2am — so <b>bedtime does about 80% of the work</b>, and you can't contradict it later in the night.</p>
+  </div>
+
+  <h2>Our bedtime, in order</h2>
+  <div class="sl-flow">
+    <span class="sl-chip">Feed (awake, lights on)</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Pyjama</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">Massage</span><span class="sl-arrow">→</span>
+    <span class="sl-chip">White noise</span><span class="sl-arrow">→</span>
+    <span class="sl-chip key">Crib, drowsy but awake</span>
+  </div>
+  <div class="sl-card">
+    <p>20–30 minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. The bath is optional and doesn't have to be in the chain at all; if he comes out of it wired, move it 1½ hours earlier or to the morning.</p>
+    <p>The routine doesn't <em>make</em> him sleepy — it announces sleep to a brain that's already ready. Work backwards from his window: last nap ended ${
+      sleepDayStats().lastNapEnd ? `<b>${clockTime(sleepDayStats().lastNapEnd)}</b>, so lights-out lands around <b>${clockTime(new Date(sleepDayStats().lastNapEnd.getTime() + cfg.ww.lastOfDay * 60000))}</b>` : "— log a nap and this fills in"
+    }. Start too early and you get a well-massaged, wide-awake baby doing four ladder rounds.</p>
+  </div>
+
+  <h2>The three phases</h2>
+  <p class="sl-lead">Nights first. Naps convert in days once nights are solid — reverse the order and both fall apart.</p>
+  <div class="sl-phase${!unlocked ? " tr-here" : ""}">
+    <div class="sl-ph-head"><span>Phase 1 · Nights only</span><span class="sl-when">${!unlocked ? "◀ we are here" : "done"}</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li><b>Change nothing about the day.</b> Bounce, white noise, stroller naps — all of it, guilt-free.</li>
+        <li>Protected daytime sleep is what <em>funds</em> the night project. An overtired baby cannot learn to settle at 7pm.</li>
+        <li>Bedtime: the routine above, into the crib drowsy but awake, ladder as needed.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="sl-phase${unlocked ? " tr-here" : ""}">
+    <div class="sl-ph-head"><span>Phase 2 · Convert the morning nap only</span><span class="sl-when">${unlocked ? "◀ unlocked" : `${streak}/${GATE_NIGHTS} nights`}</span></div>
+    <div class="sl-ph-body">
+      <ul>
+        <li><b>Gate:</b> bedtime ≤${GATE_MINS} minutes for ${GATE_NIGHTS}–5 nights running.</li>
+        <li>Nap 1 only — it carries the highest sleep pressure of the day, so it has the best odds. Naps 2 and 3 stay on the stroller, possibly for months.</li>
+        <li>Timing: ~2½ hours after morning wake. Up at 7:00 → wind-down 9:20, crib 9:30.</li>
+        <li>Mini version of bedtime, 2–3 minutes: dark room, white noise, brief cuddle. Same signals, compressed.</li>
+        <li><b>The 30-minute rescue rule:</b> not asleep after ~30 minutes of calm trying → get him up, keep him happy 15–20 min, then rescue the nap on the stroller. No guilt, no second attempt that day.</li>
+      </ul>
+      <p class="sl-note"><em>That rescue rule is what makes it safe to try. At bedtime, sleep pressure guarantees he'll eventually sleep. At nap time there's no guarantee — and a missed morning nap wrecks the whole day and that night. The nap experiment is never allowed to cost actual sleep. Expect the first crib naps to be short, 30–40 min. Length comes after settling does.</em></p>
+      <p class="sl-note"><b>Free head start:</b> run nap 1 in the bedroom now — dark, white noise, then bounce as usual. You're pre-loading the location so that when you convert, only one variable changes.</p>
+    </div>
+  </div>
+  <div class="sl-phase">
+    <div class="sl-ph-head"><span>Phase 3 · Nap 2, then done</span><span class="sl-when">later</span></div>
+    <div class="sl-ph-body"><ul><li>The last cat-nap of the day can live on the stroller basically forever — it dies on its own when he drops to two naps.</li></ul></div>
+  </div>
+
+  <h2>Mornings</h2>
+  <div class="tr-two">
+    <div class="tr-two-c no"><b>Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — still night</b><span>Room dark, voices off, night rules, feed gate applies. Even with a grumpy baby. If crying at 5:15 gets lights and morning, you've taught him the night ends at 5:15 — and he'll deliver that daily.</span></div>
+    <div class="tr-two-c yes"><b>After ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — morning</b><span>Don't fight it. Leave, wait a beat, come back with the dramatic wake-up: lights on, curtains open, big voice, <em>"¡buenos días, Leo!"</em>, out of the dark room for the bottle. The contrast is doing real chronobiology.</span></div>
+  </div>
+  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. If you want mornings at 6:30, bedtime moves later, 15 minutes every two nights — never adjusted on a bad night.</p>
+
+  <h2>What the weeks look like</h2>
+  <div class="tr-week">
+    <div class="tr-wk"><b>Nights 1–3</b><span>Worse or equal. This is the toll booth. Night 3 is often an extinction burst — he protests harder one last time to test whether the old system comes back.</span></div>
+    <div class="tr-wk"><b>Nights 4–7</b><span>Bedtime starts dropping toward 15 minutes. Rung 2 suddenly starts working. Some cycle-transition wakes simply stop happening.</span></div>
+    <div class="tr-wk"><b>Week 2–3</b><span>Bedtime consistently short, nap conversion unlocks.</span></div>
+    <div class="tr-wk"><b>Week 3–4</b><span>The new normal: asleep ~7:15, two honest feeds, up ~6:15. Two feeds is completely fine at his age and weight.</span></div>
+  </div>
+
+  <div class="sl-together">
+    <div class="sl-together-k">The thing that makes or breaks it</div>
+    <p>You both run the <b>identical</b> script. If one of you lays him down awake and the other feeds him fully to sleep, Leo gets a slot machine — and slot machines are the single hardest thing to stop pulling. Agree before bedtime, not during it.</p>
+  </div>
+
+  ${SLEEP_REASSURE + SLEEP_CITE + SLEEP_FOOTER}`;
+}
+
+const TRAIN_TABS = [
+  ["tonight", "Tonight"], ["ladder", "The ladder"], ["feeds", "Feeds"],
+  ["progress", "Progress"], ["rescue", "Rescue"], ["method", "Method"],
+];
+
+function renderSleep() {
+  const host = $("sleep-content");
+  if (!host) return;
+  const body =
+    trainView === "ladder"   ? TRAIN_LADDER :
+    trainView === "feeds"    ? trainFeedsHTML() :
+    trainView === "progress" ? trainProgressHTML() :
+    trainView === "rescue"   ? trainRescueHTML() :
+    trainView === "method"   ? trainMethodHTML() : trainTonightHTML();
+
+  host.innerHTML =
+    `<nav class="pl-subtabs tr-subtabs" id="tr-subtabs">` +
+    TRAIN_TABS.map(([k, label]) => `<button data-v="${k}"${k === trainView ? ' class="on"' : ""}>${label}</button>`).join("") +
+    `</nav><div class="tr-body">${body}</div>`;
+
+  $("tr-subtabs").addEventListener("click", (e) => {
+    if (!e.target.dataset.v) return;
+    trainView = e.target.dataset.v;
+    try { localStorage.setItem(TRAIN_KEY, trainView); } catch (err) {}
+    renderSleep();
+  });
+  const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+  on("tr-start",  startBedtimeSession);
+  on("tr-round",  () => addBedtimeRound(1));
+  on("tr-asleep", finishBedtimeSession);
+  on("tr-cancel", cancelBedtimeSession);
+  on("tr-rescue", toggleRescueNight);
 }
 
 // ============================================================
@@ -1366,90 +2492,174 @@ async function sendChat(e) {
 
 // ============================================================
 //  10h. LEO HOME — sleep-first default screen
-//  Reuses the wake-window math, targetsForAge(), sleepProgress(),
-//  and plDur/plFmt. Live bits (headline + day-bar) tick every second
-//  via render(); data bits (gauge + tiles + log) refresh on loadEvents.
+//  Everything here reads wakeState() / sleepDayStats() / cfgNow().
+//  renderLeoWake + tickNow are live (per second). renderRhythm,
+//  renderLeoData and renderNightMetrics are data-driven (loadEvents).
 // ============================================================
 
-// Headline — same math + color zones as renderWake(), its own elements.
+const pctOfDay = (min) => Math.max(0, Math.min(100, (min / 1440) * 100));
+
+// ---- Headline. The window is shown as a RANGE. A single "closes at 7:17"
+// is what produced the panic put-downs: it reads as a deadline you're failing,
+// so you put down a baby who isn't tired yet and bedtime turns into a fight.
 function renderLeoWake() {
   const card = $("leo-wake");
   if (!card) return;
-  const btn = $("leo-sleep-btn");
-  const sleeping = openSleep();
-  if (sleeping) {
-    card.className = "card wake-card zone-green";
-    $("leo-wake-eyebrow").textContent = "Asleep for 💤";
-    $("leo-wake-time").textContent = dur(now() - new Date(sleeping.start_at));
-    $("leo-wake-status").textContent = "Tap End sleep when he wakes";
-    if (btn) { btn.textContent = "End sleep"; btn.classList.add("active"); }
+  const cfg = cfgNow();
+  const w = wakeState(null, cfg);
+  const track = $("leo-ww-track");
+  renderSleepActions(w, cfg);
+
+  // Settling in the crib — the state you're actually in at 8pm.
+  const bed = openBedtime();
+  if (bed && !w.asleep) {
+    const mins = Math.round((now() - new Date(bed.start_at)) / 60000);
+    card.className = `card wake-card zone-${mins <= GATE_MINS ? "green" : "amber"}`;
+    $("leo-wake-eyebrow").textContent = `Settling · round ${bedtimeRounds(bed)}`;
+    $("leo-wake-time").textContent = dur(now() - new Date(bed.start_at));
+    $("leo-wake-status").innerHTML = mins <= GATE_MINS
+      ? `Under ${GATE_MINS} min so far — this counts toward the Phase 2 streak`
+      : `Rounds matter more than the clock. Calm first, then down awake.`;
+    track.classList.add("hidden");
     return;
   }
-  if (btn) { btn.textContent = "Start sleep"; btn.classList.remove("active"); }
+
+  if (w.asleep) {
+    const night = w.asleep.subtype === "night";
+    card.className = "card wake-card zone-green";
+    $("leo-wake-eyebrow").textContent = night ? "Asleep for the night 🌙" : "Napping for 💤";
+    $("leo-wake-time").textContent = dur(now() - new Date(w.asleep.start_at));
+    $("leo-wake-status").textContent = night
+      ? "Tap End sleep when he's up for the day"
+      : `Wake him by ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — later steals bedtime`;
+    track.classList.add("hidden");
+    return;
+  }
+
   $("leo-wake-eyebrow").textContent = "Awake for";
-  const last = lastEndedSleep();
-  if (!last) {
+  if (!w.wokeAt) {
     $("leo-wake-time").textContent = "—";
     $("leo-wake-status").textContent = "Log a sleep to start the wake window";
     card.className = "card wake-card zone-green";
+    track.classList.add("hidden");
     return;
   }
-  const wokeAt = new Date(last.end_at);
-  const mins = (now() - wokeAt) / 60000;
-  $("leo-wake-time").textContent = dur(now() - wokeAt);
-  const closesAt = new Date(wokeAt.getTime() + WAKE_TARGET * 60000);
-  $("leo-wake-status").textContent = `Window closes at ${clockTime(closesAt)}`;
-  let zone = "green";
-  if (mins > ZONE.orange) zone = "red";
-  else if (mins > ZONE.amber) zone = "orange";
-  else if (mins >= ZONE.green) zone = "amber";
-  card.className = `card wake-card zone-${zone}`;
-  // NB: the 90-min alarm fires from renderWake() (old card), so it isn't doubled here.
+
+  $("leo-wake-time").textContent = dur(now() - w.wokeAt);
+  const label = w.isLastOfDay ? "Bedtime window" : w.isFirstOfDay ? "First window" : "Window";
+  $("leo-wake-status").innerHTML = w.zone === "early"
+    ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
+    : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`;
+  card.className = `card wake-card zone-${w.zone}`;
+
+  track.classList.remove("hidden");
+  const scale = w.windowMax + 30;                 // headroom so overshoot stays visible
+  $("leo-ww-fill").style.width = Math.min(100, (w.awakeMin / scale) * 100) + "%";
+  const band = $("leo-ww-band");
+  band.style.left  = (w.windowMin / scale) * 100 + "%";
+  band.style.width = ((w.windowMax - w.windowMin) / scale) * 100 + "%";
 }
 
-// Sleep clipped to the current calendar day. Shared by the day-bar AND the gauge
-// so an overnight block (started before midnight) counts consistently in both.
-function sleepTodayStats() {
-  const t = now();
-  const dayStart = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
-  const dayMs = 86400000, nowMs = t.getTime();
-  let sleptMs = 0, naps = 0;
-  const blocks = [];
-  const sleeps = events.filter((e) =>
-    e.type === "sleep" &&
-    new Date(e.start_at).getTime() < dayStart + dayMs &&
-    (e.end_at ? new Date(e.end_at).getTime() : nowMs) >= dayStart);
-  for (const e of sleeps) {
-    const s  = Math.max(new Date(e.start_at).getTime(), dayStart);
-    const en = Math.min(e.end_at ? new Date(e.end_at).getTime() : nowMs, dayStart + dayMs);
-    if (en <= s) continue;
-    sleptMs += en - s;
-    if (e.subtype === "nap" && e.end_at) naps++;
-    blocks.push({ e, left: (s - dayStart) / dayMs * 100, width: (en - s) / dayMs * 100, ms: en - s });
+// ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,
+// because replacing a button every second makes it impossible to tap.
+let _sleepActionsSig = null;
+function renderSleepActions(w, cfg) {
+  const host = $("leo-sleep-actions");
+  if (!host) return;
+  // Bedtime only becomes a plausible choice within ~3h of the earliest bedtime.
+  const bedtimeNear = minOfDay(now()) >= hhmmToMin(cfg.night.bedtimeEarliest) - 180;
+  const bed = openBedtime();
+  const sig = w.asleep ? `end:${w.asleep.id}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`;
+  if (sig === _sleepActionsSig) return;
+  _sleepActionsSig = sig;
+  host.innerHTML = "";
+
+  const mk = (cls, text, fn) => {
+    const b = document.createElement("button");
+    b.className = `btn ${cls}`;
+    b.textContent = text;
+    b.addEventListener("click", fn);
+    host.appendChild(b);
+    return b;
+  };
+  if (bed && !w.asleep) {
+    mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
+    mk("btn-ghost", "+ Round", () => addBedtimeRound(1));
+  } else if (w.asleep) {
+    mk("btn-sleep btn-block active", "End sleep", () => endSleep());
+  } else if (bedtimeNear) {
+    mk("btn-sleep", "😴 Start nap", () => startSleep("nap"));
+    // Bedtime opens a training session, not a sleep row: the minutes between the
+    // crib and actually asleep are the number the whole plan is scored on.
+    mk("btn-ghost", "🌙 Into the crib", () => startBedtimeSession());
+  } else {
+    mk("btn-sleep btn-block", "😴 Start nap", () => startSleep("nap"));
   }
-  return { dayStart, dayMs, nowMs, sleptMs, naps, blocks };
 }
 
-// Day-bar — sleep blocks clipped to today + "now" marker + a plain summary line.
-function renderDayBar() {
-  const bar = $("leo-daybar");
-  if (!bar) return;
-  const { dayStart, dayMs, nowMs, sleptMs, naps, blocks } = sleepTodayStats();
+// ---- Today's rhythm. Static layer rebuilt on data change only.
+function renderRhythm() {
+  const host = $("leo-db-static");
+  if (!host) return;
+  const cfg = cfgNow();
+  const st = sleepDayStats();
+  const w = wakeState(null, cfg);
+
+  const cutoff = pctOfDay(hhmmToMin(cfg.naps.lastNapCutoff));
+  const bedLo  = pctOfDay(hhmmToMin(cfg.night.bedtimeEarliest));
+  const bedHi  = pctOfDay(hhmmToMin(cfg.night.bedtimeLatest));
+
   let html = "";
-  for (const b of blocks) {
-    const cls = b.e.subtype === "night" ? "night" : "nap";
-    const label = b.width > 9 ? plDur(Math.round(b.ms / 60000)) : "";
-    html += `<div class="leo-blk ${cls}" style="left:${b.left}%;width:${b.width}%">${label}</div>`;
+  // Everything after the nap cutoff is dimmed and hatched — a nap in there is
+  // the single most reliable way to wreck bedtime.
+  html += `<div class="db-cutoff-fill" style="left:${cutoff}%"></div>`;
+  html += `<div class="db-bedwin" style="left:${bedLo}%;width:${Math.max(0, bedHi - bedLo)}%"></div>`;
+  html += `<div class="db-cutoff-mark" style="left:${cutoff}%" data-t="${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}"></div>`;
+  for (const b of st.blocks) {
+    html += `<div class="leo-blk ${b.kind}${b.running ? " running" : ""}" style="left:${b.left}%;width:${b.width}%"></div>`;
   }
-  html += `<div class="leo-now" style="left:${(nowMs - dayStart) / dayMs * 100}%"></div>`;
-  bar.innerHTML = html;
+  // Ghost block: where the next sleep is predicted to land.
+  if (!w.asleep && w.opensAt) {
+    const l = pctOfDay(minOfDay(w.opensAt)), r = pctOfDay(minOfDay(w.closesAt));
+    if (r > l) html += `<div class="db-proj" style="left:${l}%;width:${r - l}%"></div>`;
+  }
+  host.innerHTML = html;
 
-  const sleeping = openSleep();
+  // Chips carry the nap text. At 375px a 45-minute nap is 10 pixels wide inside
+  // the bar — no label was ever going to fit in there.
+  const chips = $("leo-nap-chips");
+  chips.innerHTML = st.naps.length
+    ? st.naps.map((b, i) =>
+        `<span class="db-chip${b.running ? " on" : ""}${!b.running && b.fullMins < cfg.naps.minUsefulNap ? " short" : ""}">` +
+        `Nap ${i + 1} · ${clockTime(b.startAt)} · ${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
+    : `<span class="db-chip muted">No naps logged yet</span>`;
+
+  const cap = cfg.naps.maxCount;
+  $("leo-nap-pips").innerHTML =
+    `<span class="pips${st.napCount >= cfg.naps.minCount && st.napCount <= cap ? " met" : ""}">` +
+    "●".repeat(Math.min(st.napCount, cap)) + "○".repeat(Math.max(0, cap - st.napCount)) +
+    (st.napCount > cap ? "●".repeat(st.napCount - cap) : "") + `</span>` +
+    `<span class="db-pips-lab">${st.napCount} of ${cfg.naps.minCount}–${cap} naps` +
+    (st.napCount > cap ? " · over the usual cap" : st.napCount === cap ? " · cap reached" : "") + `</span>`;
+
+  $("leo-db-total").textContent = `${plDur(st.napMins)} day sleep`;
+  tickNow();
+}
+
+// ---- The ONLY thing the per-second tick touches on the day-bar.
+function tickNow() {
+  const el = $("leo-db-now");
+  if (!el) return;
+  const t = now();
+  el.style.left = pctOfDay(minOfDay(t)) + "%";
+  const st = sleepDayStats(null, t);
+  const w = wakeState(null, null, t);
   let tail;
-  if (sleeping) tail = `asleep now for ${dur(nowMs - new Date(sleeping.start_at))}`;
-  else { const l = lastEndedSleep(); tail = l ? `awake now for ${dur(nowMs - new Date(l.end_at))}` : "no sleep logged yet"; }
-  const napWord = naps === 1 ? "nap" : "naps";
-  $("leo-db-summary").innerHTML = `<b>${plDur(Math.round(sleptMs / 60000))}</b> asleep so far · ${naps} ${napWord} · ${tail}`;
+  if (w.asleep) tail = `asleep now for ${dur(t - new Date(w.asleep.start_at))}`;
+  else if (w.wokeAt) tail = `awake now for ${dur(t - w.wokeAt)}`;
+  else tail = "no sleep logged yet";
+  const s = $("leo-db-summary");
+  if (s) s.textContent = `${plDur(Math.round(st.sleptMs / 60000))} asleep so far today · ${tail}`;
 }
 
 // Average of today's completed wake windows (gap between a sleep ending and the next starting).
@@ -1466,32 +2676,334 @@ function avgWakeWindowMins() {
   return gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
 }
 
-// Gauge (sleep vs. age-normal) + the two tiles. Data-driven (called from loadEvents).
+// Average morning wake over the last 7 nights, for the bedtime projection.
+function averageMorningWake(cfg, t) {
+  const T = t || now();
+  const from = T.getTime() - 7 * 86400000;
+  const mins = [];
+  for (const e of events) {
+    if (e.type !== "sleep" || e.subtype !== "night" || !e.end_at) continue;
+    const d = new Date(e.end_at);
+    if (d.getTime() < from) continue;
+    const m = minOfDay(d);
+    if (m >= 240 && m <= 600) mins.push(m);         // 4–10am counts as "up for the day"
+  }
+  const avg = mins.length >= 3
+    ? mins.reduce((a, b) => a + b, 0) / mins.length
+    : hhmmToMin(cfg.night.morningWakeEarliest);
+  const d = new Date(T.getFullYear(), T.getMonth(), T.getDate() + 1);
+  d.setMinutes(Math.round(avg));
+  return d;
+}
+
+// Projected bedtime: last nap end + the longest window of the day, clamped into
+// the age-appropriate bedtime window. A projection, not a target — it moves with him.
+function projectTonight(cfg, st, t) {
+  const T = t || now();
+  const anchor = st.lastNapEnd || (wakeState(null, cfg, T).wokeAt);
+  if (!anchor) return null;
+  let bed = new Date(anchor.getTime() + cfg.ww.lastOfDay * 60000);
+  const lo = atToday(cfg.night.bedtimeEarliest, T), hi = atToday(cfg.night.bedtimeLatest, T);
+  if (bed < lo) bed = lo;
+  if (bed > hi) bed = hi;
+  const wake = averageMorningWake(cfg, T);
+  return { bed, wake, mins: Math.round((wake - bed) / 60000) };
+}
+
+// ---- Sleep budget. This card used to say "~4h 26m more to reach 13h", which was
+// wrong twice over: the 13–15h norm INCLUDES night sleep, and it compared a
+// part-day number to a whole-day goal. Now it tracks DAY sleep against the day
+// cap, and projects the night separately.
 function renderLeoData() {
   const g = $("leo-gauge");
   if (!g) return;
-  const sleepMs = sleepTodayStats().sleptMs;   // clipped to today — matches the day-bar
-  const sleepH = sleepMs / 3600000;
-  const m = ageMonths();
-  const tg = targetsForAge(m);
-  const fillPct = Math.min(100, (sleepH / tg.sleepHigh) * 100);
-  const lowPct = (tg.sleepLow / tg.sleepHigh) * 100;
-  const met = sleepH >= tg.sleepLow;
-  $("leo-gauge-goal").textContent = `healthy ${tg.sleepLow}–${tg.sleepHigh}h/day`;
+  const cfg = cfgNow();
+  const st = sleepDayStats();
+  const day = st.napMins;
+  const { totalDayMin, totalDayMax } = cfg.naps;
+
+  const fillPct = Math.min(100, (day / totalDayMax) * 100);
+  const bandLeft = (totalDayMin / totalDayMax) * 100;
+  const over = day > totalDayMax;
+  const inRange = day >= totalDayMin && !over;
+
+  const proj = projectTonight(cfg, st);
+  const r24 = sleepRolling24hMin();
+  const [n24lo, n24hi] = cfg.totals.healthy24h;
+
   g.innerHTML =
-    `<div class="leo-gauge-num">${plDur(Math.round(sleepMs / 60000))} <small>slept today</small></div>` +
-    `<div class="leo-gauge-bar"><div class="leo-gauge-fill${met ? " met" : ""}" style="width:${fillPct}%"></div>` +
-    `<div class="leo-gauge-band" style="left:${lowPct}%;right:0"></div></div>`;
+    `<div class="leo-gauge-num">${plDur(day)} <small>day sleep · target ${plDur(totalDayMin)}–${plDur(totalDayMax)}</small></div>` +
+    `<div class="leo-gauge-bar">` +
+      `<div class="leo-gauge-fill${over ? " over" : inRange ? " met" : ""}" style="width:${fillPct}%"></div>` +
+      `<div class="leo-gauge-band" style="left:${bandLeft}%;right:0"></div>` +
+    `</div>` +
+    (proj
+      ? `<div class="leo-proj"><span class="leo-proj-lab">Tonight, projected</span>` +
+        `<span class="leo-proj-val">asleep ~<b>${clockTime(proj.bed)}</b> → ~<b>${clockTime(proj.wake)}</b> ≈ ${plDur(proj.mins)}</span></div>`
+      : "");
+
   const cap = $("leo-gauge-cap");
-  if (met) cap.innerHTML = `In the healthy range for ${m} months ✓ <b>(${tg.sleepLow}–${tg.sleepHigh}h)</b>. Shaded zone = target.`;
-  else {
-    const need = Math.max(0, tg.sleepLow - sleepH);
-    cap.innerHTML = `~<b>${plDur(Math.round(need * 60))}</b> more to reach the ${tg.sleepLow}h low end (most comes overnight). Shaded zone = ${tg.sleepLow}–${tg.sleepHigh}h target.`;
+  const r24line = `<span class="leo-24h">${plDur(r24)} in the last 24h — norm ${plDur(n24lo)}–${plDur(n24hi)}.</span>`;
+  if (over) {
+    cap.innerHTML = `Day sleep is <b>over the usual cap</b>. More naps now usually means a harder bedtime and more night waking, not less. ${r24line}`;
+  } else if (inRange) {
+    cap.innerHTML = `Day sleep is in range for ${cfg.band} ✓ The rest should come overnight. ${r24line}`;
+  } else {
+    cap.innerHTML = `${plDur(Math.max(0, totalDayMin - day))} below the usual day-sleep range — fine if bedtime is close. ${r24line}`;
   }
+
   const p = sleepProgress();
   $("leo-longest").textContent = p.longest ? plDur(Math.round(p.longest / 60000)) : "—";
   const aww = avgWakeWindowMins();
   $("leo-avgww").textContent = aww != null ? plDur(aww) : "—";
+
+  renderProvenance(cfg);
+  renderNightMetrics(cfg);
+}
+
+// ---- The line that makes a wrong setting impossible to hide. It prints the band
+// the numbers came from, right next to the numbers. That is the whole point: the
+// old 90-minute window survived three months because nothing ever showed its age.
+function renderProvenance(cfg) {
+  const el = $("leo-cfg-prov");
+  if (!el) return;
+  const short = (m) => (m % 60 ? `${Math.floor(m / 60)}h${pad(m % 60)}` : `${Math.floor(m / 60)}h`);
+  const n = cfg.meta.overridden.length;
+  el.textContent = `${cfg.band} · ${short(cfg.ww.min)}–${short(cfg.ww.max)}` + (n ? ` · ${n} custom` : "") + " ›";
+}
+
+// ---- Night patterns: day/night feed split + wakes per night (7 days).
+// Both are pure derivations over rows we already have — no new logging.
+function feedRatio7d(t) {
+  const T = t || now();
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(T.getFullYear(), T.getMonth(), T.getDate() - i);
+    const s = d.getTime(), e = s + 86400000;
+    let night = 0, total = 0;
+    for (const ev of events) {
+      if (ev.type !== "breast" && ev.type !== "bottle") continue;
+      const at = new Date(ev.start_at).getTime();
+      if (at < s || at >= e) continue;
+      total++;
+      // Same definition the Training tab uses: after he went down, not after 7pm.
+      if (isNightFeedTime(new Date(at))) night++;
+    }
+    days.push({ d, night, total, pct: total ? (night / total) * 100 : 0 });
+  }
+  const tn = days.reduce((a, x) => a + x.night, 0), tt = days.reduce((a, x) => a + x.total, 0);
+  const nightPct = tt ? (tn / tt) * 100 : 0;
+  return { days, nightPct, flag: tt >= 10 && nightPct > 35 };
+}
+
+function nightWakes7d(t) {
+  const T = t || now();
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    // A "night" is the evening of day i through the following morning.
+    const d = new Date(T.getFullYear(), T.getMonth(), T.getDate() - i);
+    const from = d.getTime() + 19 * 60 * 60000, to = d.getTime() + 30 * 60 * 60000; // 7pm → 6am
+    let fed = 0, unfed = 0;
+    for (const ev of events) {
+      if (ev.type !== "sleep" || ev.subtype !== "night" || !ev.end_at) continue;
+      const end = new Date(ev.end_at).getTime();
+      if (end < from || end >= to) continue;
+      // Only a wake if he went back to sleep — otherwise it's the morning.
+      const back = events.some((x) => x.type === "sleep" && new Date(x.start_at).getTime() > end &&
+                                      new Date(x.start_at).getTime() < end + 4 * 3600000);
+      if (!back) continue;
+      const withFeed = events.some((x) => (x.type === "breast" || x.type === "bottle") &&
+        Math.abs(new Date(x.start_at).getTime() - end) <= 20 * 60000);
+      if (withFeed) fed++; else unfed++;
+    }
+    days.push({ d, fed, unfed, total: fed + unfed });
+  }
+  return days;
+}
+
+function renderNightMetrics(cfg) {
+  const host = $("leo-night-metrics");
+  if (!host) return;
+  const fr = feedRatio7d();
+  const nw = nightWakes7d();
+  const maxW = Math.max(1, ...nw.map((x) => x.total));
+  const dayLab = (d) => ["S", "M", "T", "W", "T", "F", "S"][d.getDay()];
+
+  // Seven empty boxes read as "broken", not as "no data yet". Say which it is.
+  const anyFeeds = fr.days.some((x) => x.total > 0);
+  const anyWakes = nw.some((x) => x.total > 0);
+  if (!anyFeeds && !anyWakes) {
+    $("leo-night-flag").textContent = "—";
+    host.innerHTML = `<p class="nm-lab">Nothing to compare yet. These build up over a week of logged feeds and night wakes.</p>`;
+    return;
+  }
+
+  $("leo-night-flag").textContent = fr.flag ? "⚠️ night-heavy" : anyFeeds ? `${Math.round(fr.nightPct)}% at night` : "—";
+
+  host.innerHTML =
+    `<p class="nm-lab">Feeds at night (7pm–6am), last 7 days</p>` +
+    `<div class="nm-row">` + fr.days.map((x) =>
+      `<span class="nm-col"><span class="nm-bar"><span class="nm-fill${x.pct > 35 ? " hot" : ""}" style="height:${Math.round(x.pct)}%"></span></span>` +
+      `<span class="nm-day">${dayLab(x.d)}</span></span>`).join("") + `</div>` +
+    (fr.flag
+      ? `<p class="nm-note">More than a third of his feeds are at night. That can be reverse cycling — worth mentioning to Dr. León Magaña rather than fixing with the clock.</p>`
+      : "") +
+    `<p class="nm-lab">Night wakes — <i class="nm-key fed"></i>with a feed <i class="nm-key unfed"></i>without</p>` +
+    `<div class="nm-row">` + nw.map((x) =>
+      `<span class="nm-col"><span class="nm-bar">` +
+      `<span class="nm-fill unfed" style="height:${Math.round((x.unfed / maxW) * 100)}%"></span>` +
+      `<span class="nm-fill fed" style="height:${Math.round((x.fed / maxW) * 100)}%"></span>` +
+      `</span><span class="nm-day">${dayLab(x.d)}</span></span>`).join("") + `</div>`;
+}
+
+// ============================================================
+//  10h-2. SETTINGS — the numbers, editable, without a deploy
+// ============================================================
+// Reached from ⋯ More, but the path people actually use is the provenance line on
+// the home screen — because that's where you are when you doubt a number.
+async function onSettingsChanged(payload) {
+  const row = payload && payload.new;
+  if (!row) return;
+  if (row.key === "baby") SETTINGS.baby = { ...SETTINGS.baby, ...row.value };
+  if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
+  settingsRev++;
+  try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
+  render(); renderRhythm(); renderLeoData(); renderAlerts(true); renderSettings();
+}
+
+// Minutes get a number box, clock times get a time box. Deliberately not sliders:
+// you use this at 3am and a slider can't hit 17:15.
+const SETTINGS_FIELDS = [
+  { section: "ww", title: "Wake windows", help: "How long he can be happily awake between sleeps. Too short is what causes bedtime fights.", fields: [
+    { key: "min", label: "Shortest", type: "min" },
+    { key: "target", label: "Typical", type: "min" },
+    { key: "max", label: "Longest", type: "min" },
+    { key: "firstOfDay", label: "First of the day", type: "min" },
+    { key: "lastOfDay", label: "Before bedtime", type: "min" },
+  ]},
+  { section: "naps", title: "Naps", help: "Day sleep competes with night sleep. The cap matters more than the count.", fields: [
+    { key: "minCount", label: "Fewest naps", type: "count" },
+    { key: "maxCount", label: "Most naps", type: "count" },
+    { key: "totalDayMin", label: "Day sleep — least", type: "min" },
+    { key: "totalDayMax", label: "Day sleep — cap", type: "min" },
+    { key: "lastNapCutoff", label: "Last nap ends by", type: "time" },
+    { key: "minUsefulNap", label: "A nap counts from", type: "min" },
+  ]},
+  { section: "night", title: "Night", help: "Bedtime is a window, not a time.", fields: [
+    { key: "bedtimeEarliest", label: "Bedtime — earliest", type: "time" },
+    { key: "bedtimeLatest", label: "Bedtime — latest", type: "time" },
+    { key: "morningWakeEarliest", label: "Morning starts at", type: "time" },
+    { key: "feedGateMin", label: "Typical feed spacing", type: "min" },
+  ]},
+  { section: "feeds", title: "Feeds", help: "Counts predict the next feed. The sizes below decide whether a night feed is real hunger or a habit that's ready to drop.", fields: [
+    { key: "perDayMin", label: "Fewest per day", type: "count" },
+    { key: "perDayMax", label: "Most per day", type: "count" },
+    { key: "fullMl",   label: "Full bottle, from (ml)", type: "count" },
+    { key: "snackMl",  label: "Snack bottle, up to (ml)", type: "count" },
+    { key: "fullMin",  label: "Full breast feed, from (min)", type: "count" },
+    { key: "snackMin", label: "Snack breast feed, up to (min)", type: "count" },
+  ]},
+];
+
+function nextBandChange() {
+  const m = ageMonths(), cur = defaultsForMonth(m);
+  if (cur.maxMonth >= 999) return null;
+  const d = new Date(BIRTH.getFullYear(), BIRTH.getMonth() + cur.maxMonth + 1, BIRTH.getDate());
+  return { at: d, band: defaultsForMonth(cur.maxMonth + 1).band };
+}
+
+function renderSettings() {
+  const host = $("settings-content");
+  if (!host || !tabOpen("settings")) return;
+  const cfg = cfgNow();
+  const base = defaultsForMonth(cfg.month);
+  const nb = nextBandChange();
+  host.innerHTML = "";
+
+  const head = document.createElement("section");
+  head.className = "card";
+  head.innerHTML =
+    `<div class="card-head"><h2>Sleep settings</h2></div>` +
+    `<p class="set-band">Age band <b>${cfg.band}</b> — chosen from his age, automatically.` +
+    (nb ? ` Next change ${nb.at.toLocaleDateString([], { day: "numeric", month: "short" })} → ${nb.band}.` : "") + `</p>` +
+    `<p class="set-note">These are guidelines, not medical advice. Everything below auto-updates as Leo grows; change a number only when you have a reason, and it will stick through his next birthday.</p>`;
+  host.appendChild(head);
+
+  for (const group of SETTINGS_FIELDS) {
+    const card = document.createElement("section");
+    card.className = "card";
+    const changed = group.fields.some((f) => cfg.meta.overridden.includes(`${group.section}.${f.key}`));
+    card.innerHTML = `<div class="card-head"><h2>${group.title}</h2>` +
+      (changed ? `<button class="link-btn" data-reset="${group.section}">Reset</button>` : "") + `</div>` +
+      `<p class="set-help">${group.help}</p>`;
+
+    const grid = document.createElement("div");
+    grid.className = "set-grid";
+    for (const f of group.fields) {
+      const path = `${group.section}.${f.key}`;
+      const val = cfg[group.section][f.key];
+      const def = base[group.section][f.key];
+      const isCustom = cfg.meta.overridden.includes(path);
+
+      const row = document.createElement("label");
+      row.className = "set-row" + (isCustom ? " custom" : "");
+      const lab = document.createElement("span");
+      lab.className = "set-lab";
+      lab.textContent = f.label;
+      const inp = document.createElement("input");
+      if (f.type === "time") { inp.type = "time"; inp.value = val; }
+      else {
+        inp.type = "number"; inp.inputMode = "numeric";
+        inp.step = f.type === "min" ? "5" : "1";
+        inp.min = "0";
+        inp.value = val;
+      }
+      inp.className = "set-inp";
+      inp.addEventListener("change", () => {
+        const next = { ...SETTINGS.overrides };
+        const raw = f.type === "time" ? inp.value : Number(inp.value);
+        if (!raw && raw !== 0) { inp.value = val; return; }
+        if (JSON.stringify(raw) === JSON.stringify(def)) delete next[path];
+        else next[path] = raw;
+        saveOverrides(next);
+      });
+      const hint = document.createElement("span");
+      hint.className = "set-hint";
+      hint.textContent = f.type === "time" ? `norm ${plFmt(hhmmToMin(def))}` : `norm ${def}${f.type === "min" ? "m" : ""}`;
+      row.append(lab, inp, hint);
+      grid.appendChild(row);
+    }
+    card.appendChild(grid);
+    host.appendChild(card);
+  }
+
+  const foot = document.createElement("section");
+  foot.className = "card";
+  foot.innerHTML =
+    `<p class="set-ref">Reference for ${cfg.band}: about ${plDur(cfg.night.expectedNightSleep[0])}–${plDur(cfg.night.expectedNightSleep[1])} at night, ` +
+    `${plDur(cfg.totals.healthy24h[0])}–${plDur(cfg.totals.healthy24h[1])} in 24 hours <b>including</b> the night.</p>` +
+    (cfg.meta.overridden.length
+      ? `<p class="set-ref">${cfg.meta.overridden.length} value${cfg.meta.overridden.length === 1 ? "" : "s"} changed from the age norm.</p>` +
+        `<div id="set-reset-all"><button class="btn btn-ghost btn-block" data-reset="ALL">Reset everything to age norms</button></div>`
+      : `<p class="set-ref">Every value is at the age norm.</p>`);
+  host.appendChild(foot);
+
+  // Inline two-step confirm — never confirm(), per spec.md.
+  host.querySelectorAll("[data-reset]").forEach((b) => b.addEventListener("click", () => {
+    const scope = b.dataset.reset;
+    const wrap = document.createElement("span");
+    wrap.className = "del-confirm";
+    wrap.innerHTML = `<button class="del-yes">Reset</button><button class="del-no">Keep</button>`;
+    b.replaceWith(wrap);
+    wrap.querySelector(".del-no").addEventListener("click", () => wrap.replaceWith(b));
+    wrap.querySelector(".del-yes").addEventListener("click", () => {
+      const next = {};
+      if (scope !== "ALL") {
+        for (const [k, v] of Object.entries(SETTINGS.overrides)) if (!k.startsWith(scope + ".")) next[k] = v;
+      }
+      saveOverrides(next);
+    });
+  }));
 }
 
 // ============================================================
@@ -1796,8 +3308,10 @@ $("edit-save").addEventListener("click", saveEdit);
 
 $("export-btn").addEventListener("click", exportCSV);
 
-// New Leo home + growth wiring
-$("leo-sleep-btn").addEventListener("click", tapSleep);
+// New Leo home + growth wiring.
+// NB: the sleep buttons are built by renderSleepActions() — they carry their own
+// listeners because the choice (nap only, or nap vs bedtime) changes during the day.
+$("leo-cfg-prov").addEventListener("click", () => switchTab("settings"));
 $("leo-export-btn").addEventListener("click", exportCSV);
 $("leo-ask-card").addEventListener("click", () => switchTab("ask"));
 $("leo-fix-btn").addEventListener("click", () => {
@@ -1820,10 +3334,15 @@ document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click",
 $("pl-subtabs").addEventListener("click", (e) => {
   if (e.target.dataset.v) { planner.view = e.target.dataset.v; plStore.set("view", planner.view); renderPlanner(); }
 });
-document.querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click", () => {
+// Scoped to [data-range]: the edit modal now has .seg-btn buttons too, and an
+// unscoped selector here would set statsRange to NaN when you pick "Nap".
+document.querySelectorAll(".seg-btn[data-range]").forEach((b) => b.addEventListener("click", () => {
   statsRange = Number(b.dataset.range);
-  document.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".seg-btn[data-range]").forEach((x) => x.classList.toggle("active", x === b));
   renderStats();
+}));
+$("edit-subtype").querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click", () => {
+  $("edit-subtype").querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
 }));
 $("insight-refresh").addEventListener("click", () => loadInsight(true));
 $("chat-form").addEventListener("submit", sendChat);
@@ -1831,6 +3350,86 @@ $("chat-form").addEventListener("submit", sendChat);
 // Close modals: backdrop click or any [data-close] button.
 $("modal-backdrop").addEventListener("click", (e) => { if (e.target.id === "modal-backdrop") closeModal(); });
 document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+// ============================================================
+//  11b. leoDebug — time travel. This is the test suite.
+// ============================================================
+// There is no test runner in this project, and the alerts are all about time of
+// day, so they're untestable by waiting. Open the console (Mac Safari → Develop →
+// iPhone works on the installed PWA) and:
+//
+//   leoDebug.fakeDay("06:10 wake, 08:00-08:45 nap, 11:30-12:50 nap, 16:40- nap")
+//   leoDebug.at("17:25")
+//   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
+//   leoDebug.clear()       → back to the real clock; reload to drop the fake data
+function _redrawAll() { render(); renderRhythm(); renderLeoData(); renderAlerts(true); renderSettings(); }
+
+window.leoDebug = {
+  // Jump to a wall-clock time today. Everything reads now(), so everything moves.
+  at(hhmm) {
+    TIME_SHIFT_MS = 0;
+    TIME_SHIFT_MS = atToday(hhmm).getTime() - Date.now();
+    _redrawAll();
+    return `now() = ${now().toLocaleString()}`;
+  },
+  clear() { TIME_SHIFT_MS = 0; _redrawAll(); return `now() = ${now().toLocaleString()} (real)`; },
+  cfg() { return cfgNow(); },
+  state() {
+    const w = wakeState(), st = sleepDayStats();
+    return {
+      zone: w.zone, awake: w.awakeMin ? plDur(Math.round(w.awakeMin)) : null,
+      window: w.opensAt ? `${clockTime(w.opensAt)}–${clockTime(w.closesAt)}` : null,
+      firstOfDay: w.isFirstOfDay, lastOfDay: w.isLastOfDay,
+      naps: st.napCount, daySleep: plDur(st.napMins), total: plDur(Math.round(st.sleptMs / 60000)),
+      rolling24h: plDur(sleepRolling24hMin()),
+    };
+  },
+  alerts() {
+    const d = dismissedMap();
+    return evaluateAlerts().map((a) => ({ id: a.id, sev: a.sev, key: a.key, push: !!a.push, dismissed: !!d[a.key], title: a.title }));
+  },
+  // "06:10 wake, 08:00-08:45 nap, 11:30-12:50 nap, 16:40- nap" (open end = running).
+  // In memory only — nothing is written to Supabase. Reload to get real data back.
+  fakeDay(spec) {
+    const base = now();
+    const day0 = new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime();
+    const mk = (m) => new Date(day0 + m * 60000).toISOString();
+    const out = [];
+    let n = 0;
+    for (const raw of String(spec).split(",")) {
+      const s = raw.trim();
+      if (!s) continue;
+      const parts = s.split(/\s+/);
+      const range = parts[0], kind = (parts[1] || "nap").toLowerCase();
+      if (kind === "wake") {          // "he was up for the day at" → last night's sleep
+        out.push({ id: `fake-${++n}`, type: "sleep", subtype: "night", start_at: mk(-240), end_at: mk(plToMin(range)) });
+        continue;
+      }
+      const [a, b] = range.split("-");
+      out.push({
+        id: `fake-${++n}`, type: "sleep", subtype: kind === "night" ? "night" : "nap",
+        start_at: mk(plToMin(a)), end_at: b ? mk(plToMin(b)) : null,
+      });
+    }
+    events = out.sort((x, y) => new Date(y.start_at) - new Date(x.start_at));   // newest first
+    _redrawAll();
+    return `${events.length} fake events in memory — reload to restore real data`;
+  },
+  // Full control when fakeDay's shorthand isn't enough — e.g. checking that an
+  // alert re-fires for a DIFFERENT row id. (`events` is a module-scope `let`, so
+  // assigning window.events from the console silently does nothing.)
+  setEvents(rows) {
+    events = (rows || []).slice().sort((x, y) => new Date(y.start_at) - new Date(x.start_at));
+    _redrawAll();
+    return `${events.length} events in memory`;
+  },
+  events() { return events; },
+  undismissAll() {
+    try { localStorage.removeItem(ALERT_DISMISS_KEY); } catch (e) {}
+    renderAlerts(true);
+    return "dismissals cleared";
+  },
+};
 
 // ============================================================
 //  12. PWA — register the service worker (installability)

@@ -19,10 +19,15 @@ screen updates instantly with no refresh.
 
 1. **Wake-window timer (the headline feature).**
    - Big live timer counting how long Leo has been awake since the last sleep ended.
-   - Color zones using these exact thresholds: **green < 75 min, amber 75–90, orange 90–105, red > 105.**
-   - Show the clock time the window closes (last wake time + 90 min).
-   - When it crosses **90 minutes**, fire an alert: vibrate, a short beep, and a browser
-     notification (request permission via a bell button).
+   - ⚠️ **SUPERSEDED — do not build from the numbers below.** This file is the original
+     June 2026 build prompt, kept for history. It hardcoded a 90-minute wake window and
+     zones at 75/90/105; those were right at 3 months, wrong by 6, and the app went on
+     telling us to put a not-tired baby to bed for months. Every number now comes from
+     `AGE_DEFAULTS` in `app.js` ("0b. SLEEP MODEL"), is chosen by Leo's age automatically,
+     and is overridable in Sleep settings. If you are reimplementing the timer, read that
+     section — not this one.
+   - The window is displayed as a **range** ("Window: 7:20 – 7:50 PM"), never a single
+     cliff time. A single time reads as a deadline and produces panic put-downs.
 
 2. **Feed logging with a running timer.**
    - "Breast L" and "Breast R" buttons START a live feed timer (show a running m:ss banner).

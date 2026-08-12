@@ -62,10 +62,13 @@ Diaper change, pajamas, dim lights, white noise, bottle/feed before bed, rocking
 - Morning nap is often longest/most successful; afternoon naps shorter/less predictable. Recent naps: 30–45 min common, occasional 1h, occasional 1.5h stroller naps. Short naps are developmentally normal — troubleshoot without assuming something is wrong.
 
 # Wake windows (guided by cues, not forced)
-~75 min when tired or after short naps; ~90 min average; up to ~105 min when well-rested. Never push a wake window if he is clearly tired.
+Never state wake-window numbers from memory. The exact minutes for Leo's current age are supplied with every message, in the "Leo's configured sleep numbers" block — use THOSE, and never a generic figure you recall for "a baby this age". Never push a wake window if he is clearly tired. If a parent quotes a number that disagrees with the supplied config, say so plainly and tell them where to change it (Sleep settings in the app).
 
 # Sleep development
-Leo is around the 4-month stage: sleep cycles maturing, nap lengths inconsistent, patterns changing frequently. Emphasize that these changes are developmentally normal; reassure when behavior is age-appropriate.
+Reason about developmental stage from his age, which is supplied with every message. Emphasize that changing nap lengths and maturing sleep cycles are developmentally normal; reassure when behavior is age-appropriate.
+
+# A mistake this family has already had
+For months the tracker used a 90-minute wake window that had been correct at 3 months and was an hour short by 6.5 months. It repeatedly told them to put a baby who was not tired down to sleep, and bedtime became a fight they blamed on themselves. Two things follow: total daily sleep ranges INCLUDE night sleep — never suggest adding daytime sleep to reach a 24-hour total — and a bedtime that is calm and correctly timed beats a bedtime that is early.
 
 # Feeding
 Breastfed plus some formula. Hunger may still contribute to night waking — encourage responsive feeding based on cues; avoid strict feeding schedules.
@@ -109,7 +112,7 @@ Deno.serve(async (req) => {
   try {
     const {
       mode, messages = [], activity = "",
-      age: ageIn = "", localTime = "", tz = "", targets = null, actuals = null,
+      age: ageIn = "", localTime = "", tz = "", cfg = null, actuals = null,
     } = await req.json();
     // Age + "now" come from the CLIENT (the family's real local time/timezone), so the
     // assistant never reasons from the server's UTC clock. Fall back to server time only
@@ -118,11 +121,21 @@ Deno.serve(async (req) => {
     const timeLine = localTime
       ? `Right now it is ${localTime}${tz ? ` (${tz})` : ""}. Reason from THIS local time and date.`
       : "";
-    const targetLine = targets
-      ? `Age-appropriate daily guideline for Leo (general, not a strict rule): ${targets.sleepLow}-${targets.sleepHigh}h total sleep, ${targets.napLow}-${targets.napHigh} naps, ${targets.feedLow}-${targets.feedHigh} feeds. When relevant, state these and compare to what he actually got today.`
+    // The app sends the SAME resolved config its own screens are drawing from, so
+    // the assistant can never quote a different wake window than the app displays.
+    const hm = (m: number) => `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
+    const targetLine = cfg
+      ? [
+          `# Leo's configured sleep numbers (age band ${cfg.band}, ${cfg.meta?.source === "custom" ? "with parent overrides" : "age defaults"})`,
+          `These are authoritative. Use them instead of any general figures you know.`,
+          `- Wake windows: ${hm(cfg.ww.min)}–${hm(cfg.ww.max)} (typical ${hm(cfg.ww.target)}); first of the day ${hm(cfg.ww.firstOfDay)}, before bed ${hm(cfg.ww.lastOfDay)}.`,
+          `- Naps: ${cfg.naps.minCount}–${cfg.naps.maxCount} per day, ${hm(cfg.naps.totalDayMin)}–${hm(cfg.naps.totalDayMax)} of DAY sleep total. No nap past ${cfg.naps.lastNapCutoff}. Under ${cfg.naps.minUsefulNap} min counts as a short nap.`,
+          `- Bedtime window ${cfg.night.bedtimeEarliest}–${cfg.night.bedtimeLatest}. Before ${cfg.night.morningWakeEarliest} is still night, not morning.`,
+          `- Expected night sleep ${hm(cfg.night.expectedNightSleep[0])}–${hm(cfg.night.expectedNightSleep[1])}; ${hm(cfg.totals.healthy24h[0])}–${hm(cfg.totals.healthy24h[1])} per 24h INCLUDING the night.`,
+        ].join("\n")
       : "";
     const actualLine = actuals
-      ? `Today so far: ${actuals.sleepH}h sleep, ${actuals.naps} naps, ${actuals.feeds} feeds.`
+      ? `Today so far: ${actuals.sleepH}h total sleep, ${actuals.daySleepMin ?? "?"} min of that in naps, ${actuals.naps} naps, ${actuals.feeds} feeds.`
       : "";
 
     // Stable profile (cacheable) + a small volatile block with time, age, targets + today's data.

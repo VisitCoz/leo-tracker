@@ -52,8 +52,9 @@
         <button id="more-btn" class="icon-btn" title="More" aria-label="More">⋯</button>
         <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
       </div>
-      <!-- More menu: the old screens, kept just in case -->
+      <!-- More menu: settings + the old screens, kept just in case -->
       <div id="more-menu" class="more-menu hidden">
+        <button data-tab="settings">⚙️ Sleep settings</button>
         <button data-tab="home">🍼 Feeds &amp; milestones</button>
         <button data-tab="planner">🗓️ Day planner</button>
       </div>
@@ -64,31 +65,50 @@
 
     <!-- ============ LEO — new default home (sleep-first) ============ -->
     <section id="tab-leo" class="tab">
-      <!-- 1. Sleep / awake headline (same math + color zones as the old wake card) -->
+      <!-- 0. Alerts — priority-ordered, dismissible, re-fire on the next occurrence -->
+      <div id="leo-alerts" class="leo-alerts" aria-live="polite"></div>
+
+      <!-- 1. Sleep / awake headline. The window is a RANGE, not a cliff time:
+           a single "closes at 7:17" is what caused the panic put-downs. -->
       <section id="leo-wake" class="card wake-card zone-green">
         <p id="leo-wake-eyebrow" class="card-eyebrow">Awake for</p>
         <p id="leo-wake-time" class="wake-time">0:00</p>
-        <p id="leo-wake-status" class="wake-status">Window closes at —</p>
-        <button id="leo-sleep-btn" class="btn btn-sleep btn-block">Start sleep</button>
+        <p id="leo-wake-status" class="wake-status">Log a sleep to start the wake window</p>
+        <div id="leo-ww-track" class="ww-track">
+          <div id="leo-ww-fill" class="ww-fill"></div>
+          <div id="leo-ww-band" class="ww-band"></div>
+        </div>
+        <div id="leo-sleep-actions" class="leo-sleep-actions"></div>
         <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
       </section>
 
-      <!-- 2. Today's rhythm — day-bar -->
+      <!-- 2. Today's rhythm — day-bar. #leo-db-static is rebuilt only when the data
+           changes; #leo-db-now is the only thing the per-second tick touches. -->
       <section class="card">
-        <div class="card-head"><h2>Today's rhythm</h2></div>
-        <p id="leo-db-summary" class="leo-db-summary">—</p>
-        <div id="leo-daybar" class="leo-daybar"></div>
+        <div class="card-head"><h2>Today's rhythm</h2><span id="leo-db-total" class="since">—</span></div>
+        <div id="leo-daybar" class="leo-daybar">
+          <div id="leo-db-static"></div>
+          <div id="leo-db-now" class="leo-now" style="left:0%"></div>
+        </div>
         <div class="leo-db-axis"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
+        <div id="leo-nap-chips" class="db-chips"></div>
+        <div id="leo-nap-pips" class="db-pips"></div>
         <div class="leo-db-legend">
-          <span><i class="leo-lg night"></i>Night sleep</span>
+          <span><i class="leo-lg night"></i>Night</span>
           <span><i class="leo-lg nap"></i>Nap</span>
+          <span><i class="leo-lg proj"></i>Next</span>
+          <span><i class="leo-lg bed"></i>Bedtime</span>
+          <span><i class="leo-lg cut"></i>Cutoff</span>
           <span><i class="leo-lg now"></i>Now</span>
         </div>
+        <p id="leo-db-summary" class="leo-db-summary">—</p>
       </section>
 
-      <!-- 3. Sleep vs. what's normal for his age -->
+      <!-- 3. Day-sleep budget + tonight's projection. This replaced a nudge that
+           said "Xh more to reach 13h" — the 13–15h range INCLUDES night sleep, so
+           the app was pushing more daytime sleep and stealing it from the night. -->
       <section class="card">
-        <div class="card-head"><h2>Sleep vs. normal</h2><span id="leo-gauge-goal" class="since">—</span></div>
+        <div class="card-head"><h2>Sleep budget</h2><button id="leo-cfg-prov" class="link-btn leo-prov">—</button></div>
         <div id="leo-gauge"></div>
         <p id="leo-gauge-cap" class="leo-gauge-cap"></p>
       </section>
@@ -97,6 +117,12 @@
       <section class="tiles leo-tiles">
         <div class="tile"><span id="leo-longest" class="tile-num">—</span><span class="tile-label">longest night stretch — his "sleeping through the night" number</span></div>
         <div class="tile"><span id="leo-avgww" class="tile-num">—</span><span class="tile-label">average wake window today</span></div>
+      </section>
+
+      <!-- 5. Night patterns — day/night feed split + wakes per night -->
+      <section class="card">
+        <div class="card-head"><h2>Night patterns</h2><span id="leo-night-flag" class="since">—</span></div>
+        <div id="leo-night-metrics"></div>
       </section>
 
       <!-- 5. Editable today log — fix a mislogged time in one tap -->
@@ -119,12 +145,9 @@
 
     <!-- ============ HOME TAB (kept — reachable via ⋯ More) ============ -->
     <section id="tab-home" class="tab hidden">
-      <!-- Wake-window timer (headline) -->
-      <section id="wake-card" class="card wake-card zone-green">
-        <p id="wake-eyebrow" class="card-eyebrow">Awake for</p>
-        <p id="wake-time" class="wake-time">0:00</p>
-        <p id="wake-status" class="wake-status">Window closes at —</p>
-      </section>
+      <!-- The duplicate wake card that used to sit here is gone. It was a second
+           copy of the wake-window math and it drifted out of sync with the Leo tab.
+           The sticky #topbanner above shows the same timer on every tab. -->
 
       <!-- Live feed / sleep banner -->
       <section id="live-banner" class="live-banner hidden" aria-live="polite"></section>
@@ -183,7 +206,6 @@
         <div class="tile"><span id="t-sleep" class="tile-num">0h</span><span class="tile-label">sleep</span></div>
         <div class="tile"><span id="t-feedtime" class="tile-num">0m</span><span class="tile-label">feed time</span></div>
       </section>
-      <div id="targets-line" class="targets"></div>
 
       <!-- Today's log -->
       <section class="card">
@@ -259,11 +281,16 @@
       <div id="sleep-content"></div>
     </section>
 
+    <!-- ============ SETTINGS TAB (reached from ⋯ More, or the provenance line) ==== -->
+    <section id="tab-settings" class="tab hidden">
+      <div id="settings-content"></div>
+    </section>
+
     <!-- ============ BOTTOM NAV ============ -->
     <nav class="bottomnav">
       <button class="nav-btn active" data-tab="leo"><span>🏠</span>Leo</button>
       <button class="nav-btn" data-tab="grow"><span>📈</span>Growth</button>
-      <button class="nav-btn" data-tab="sleep"><span>🌙</span>Sleep</button>
+      <button class="nav-btn" data-tab="sleep"><span>🌙</span>Training</button>
       <button class="nav-btn" data-tab="food"><span>🍽️</span>Food</button>
       <button class="nav-btn" data-tab="ask"><span>💬</span>Ask</button>
     </nav>
@@ -304,6 +331,15 @@
       <div id="edit-row-end" class="edit-field">
         <label for="edit-end">End <span class="edit-hint">(leave blank if still running)</span></label>
         <input id="edit-end" type="datetime-local" />
+      </div>
+      <!-- Nap vs night used to be guessed from the clock and could never be fixed.
+           A 6:45pm bedtime got filed as a nap and broke the nap count all evening. -->
+      <div id="edit-row-subtype" class="edit-field">
+        <label>This sleep was</label>
+        <div class="seg" id="edit-subtype">
+          <button type="button" class="seg-btn" data-subtype="nap">😴 Nap</button>
+          <button type="button" class="seg-btn" data-subtype="night">🌙 Night sleep</button>
+        </div>
       </div>
       <div id="edit-row-ml" class="edit-field">
         <label for="edit-ml">Milliliters (ml)</label>

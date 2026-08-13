@@ -1271,6 +1271,7 @@ function render() {
     if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
     if (trainView === "patterns") tickNow();   // moves ONE element
   }
+  if (tabOpen("leo")) tickRing();          // one rotation, nothing rebuilt
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -1460,7 +1461,10 @@ function renderLog(listId) {
         const t = new Date(e.start_at).getTime();
         return t >= ns.nightStart.getTime() && t < ns.morningAt.getTime();
       })
-    : events.filter((e) => isToday(e.start_at));
+    // Overlaps today, not just started today. Last night's sleep began at 7:32pm
+    // YESTERDAY, so filtering on start_at alone made the entire night vanish from
+    // the screen the moment it flipped to day mode at 6am.
+    : events.filter((e) => isToday(e.start_at) || (e.end_at && isToday(e.end_at)));
   if (today.length === 0) {
     list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged tonight yet." : "No entries yet today."}</li>`;
     return;
@@ -2854,12 +2858,104 @@ function renderLeoWake() {
   band.style.width = ((w.windowMax - w.windowMin) / scale) * 100 + "%";
 }
 
+// ---- The 24-hour ring ------------------------------------------------
+// Every sleep in the last 24h, placed by TIME OF DAY on a clock face. Last night
+// is the big arc; naps are the small ones. Crucially it does not care which
+// calendar day a sleep started on — which is exactly why the night used to
+// disappear from the home screen at 6am.
+const RING_C = 2 * Math.PI * 70;   // circumference at r=70
+
+function ringSegments(t) {
+  const T = t || now();
+  const from = T.getTime() - 86400000;
+  const out = [];
+  for (const e of events) {
+    if (e.type !== "sleep") continue;
+    const kind = isNightRow(e) ? "night" : "nap";
+    for (const [a, b] of sleepSegments(e, T.getTime())) {
+      let cur = Math.max(a, from);
+      const end = Math.min(b, T.getTime());
+      // A segment crossing midnight has to be cut, or it would wrap the ring.
+      while (cur < end) {
+        const d = new Date(cur);
+        const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+        const chunk = Math.min(end, midnight);
+        out.push({ kind, from: minOfDay(d), to: minOfDay(d) + (chunk - cur) / 60000 });
+        cur = chunk;
+      }
+    }
+  }
+  return out;
+}
+
+// Sleep in the last rolling 24h, split night vs nap — the two tile numbers.
+function ringTotals(t) {
+  let night = 0, nap = 0;
+  for (const s of ringSegments(t)) {
+    if (s.kind === "night") night += s.to - s.from; else nap += s.to - s.from;
+  }
+  return { nightMin: Math.round(night), napMin: Math.round(nap) };
+}
+
+function renderRing() {
+  const svg = $("leo-ring");
+  if (!svg) return;
+  const cfg = cfgNow();
+  const T = now();
+  const w = wakeState(null, cfg, T);
+  const ns = nightState(null, cfg, T);
+
+  const arc = (fromMin, toMin, cls, extra) => {
+    const len = Math.max(0.6, ((toMin - fromMin) / 1440) * RING_C);
+    return `<circle cx="90" cy="90" r="70" class="${cls}" ${extra || ""} ` +
+           `stroke-dasharray="${len.toFixed(2)} ${RING_C.toFixed(2)}" ` +
+           `stroke-dashoffset="${(-(fromMin / 1440) * RING_C).toFixed(2)}"></circle>`;
+  };
+
+  let html = "";
+  for (const s of ringSegments(T)) html += arc(s.from, s.to, `ring-${s.kind}`);
+  // Where the next sleep is predicted to land — dashed, so it reads as "not yet".
+  if (!w.asleep && w.opensAt) {
+    const a = minOfDay(w.opensAt), b = minOfDay(w.closesAt);
+    if (b > a) html += arc(a, b, "ring-next");
+  }
+  $("leo-ring-arcs").innerHTML = html;
+  tickRing();
+
+  // The centre deliberately does NOT repeat the big timer above it — it answers
+  // the one thing that card doesn't: what happens next.
+  let lab = "next sleep", val = "—";
+  if (ns.isNight) {
+    lab = "morning at"; val = plFmt(hhmmToMin(cfg.night.morningWakeEarliest));
+  } else if (w.asleep) {
+    lab = "wake by"; val = plFmt(hhmmToMin(cfg.naps.lastNapCutoff));
+  } else if (w.opensAt) {
+    val = clockTime(w.opensAt).replace(/\s?[AP]M/, "");
+  }
+  $("leo-ring-lab").textContent = lab;
+  $("leo-ring-val").textContent = val;
+
+  const tot = ringTotals(T);
+  $("leo-ring-night").textContent = tot.nightMin ? plDur(tot.nightMin) : "—";
+  $("leo-ring-night-lab").textContent = tot.nightMin ? "night sleep" : "no night logged";
+  $("leo-ring-naps").textContent = plDur(tot.napMin);
+  $("leo-ring-naps-lab").textContent = "naps";
+  $("leo-naps-total").textContent = plDur(tot.nightMin + tot.napMin) + " asleep";
+}
+
+// The only thing that moves every second: one rotation.
+function tickRing() {
+  const hand = $("leo-ring-hand");
+  if (hand) hand.setAttribute("transform", `rotate(${(minOfDay(now()) / 1440) * 360} 90 90)`);
+}
+
 // ---- Naps. Answers "how many is he supposed to have" with hollow dots, and
 // says it in words underneath — the old pip row printed "1 of 2–3 naps" with
 // nothing telling you that was a target.
 function renderNaps() {
   const host = $("leo-nap-pips");
   if (!host) return;
+  renderRing();
   const cfg = cfgNow();
   const st = sleepDayStats();
   const cap = cfg.naps.maxCount;
@@ -2869,7 +2965,8 @@ function renderNaps() {
     dots += `<span class="nap-dot${i < st.napCount ? (i >= cap ? " over" : " on") : ""}"></span>`;
   }
   host.innerHTML = dots;
-  $("leo-naps-total").textContent = plDur(st.napMins);
+  // The card header belongs to renderRing() now — it shows the 24h total, not
+  // just naps. Setting it here as well just clobbered it.
   $("leo-naps-why").textContent = st.napCount > cap
     ? `That's more than usual — ${cfg.naps.minCount}–${cap} naps a day is the target at ${cfg.band}.`
     : `He usually has ${cfg.naps.minCount}–${cap} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
@@ -2906,7 +3003,7 @@ function renderSleepActions(w, cfg) {
   // it in the key the memo would keep the stale label across the boundary.
   const paused = isPaused(w.asleep);
   const sig = `${ns.isNight}:${ns.logged}:` + (
-    w.asleep ? `end:${w.asleep.id}:${paused}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
+    w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -2941,7 +3038,8 @@ function renderSleepActions(w, cfg) {
     }
   } else if (w.asleep) {
     mk("btn-sleep", "⏸ He stirred", () => pauseSleep());
-    mk("btn-ghost", "End nap", () => endSleep());
+    // A night sleep ended at 6:50am is not a nap — the label has to follow the row.
+    mk("btn-ghost", isNightRow(w.asleep) ? "Up for the day" : "End nap", () => endSleep());
   } else if (bedtimeNear) {
     mk("btn-sleep", "😴 Start nap", () => startSleep("nap"));
     // Bedtime opens a training session, not a sleep row: the minutes between the

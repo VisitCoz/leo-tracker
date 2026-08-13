@@ -88,14 +88,44 @@
         <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
       </section>
 
-      <!-- 2. Naps. The hollow dots ARE the answer to "how many is he supposed to
-           have". Hidden entirely at night — there are no naps at 3am. -->
+      <!-- 2. The 24-hour ring. Last night and today's naps in one object, placed by
+           time of day — you read the SHAPE of the day before any number. This is
+           also where last night finally shows up: the log filters on the calendar
+           day, so a sleep that started at 7:32pm yesterday was invisible all morning. -->
       <section id="leo-naps-card" class="card">
-        <div class="card-head"><h2>Naps</h2><span id="leo-naps-total" class="since">—</span></div>
+        <div class="card-head"><h2>The last 24 hours</h2><span id="leo-naps-total" class="since">—</span></div>
+        <div class="ring-wrap">
+          <svg id="leo-ring" viewBox="0 0 180 180" class="ring" role="img" aria-labelledby="leo-ring-alt">
+            <title id="leo-ring-alt">Sleep over the last 24 hours, laid out as a clock face</title>
+            <circle cx="90" cy="90" r="70" fill="none" stroke="#2f2236" stroke-width="16"></circle>
+            <g id="leo-ring-arcs" transform="rotate(-90 90 90)" fill="none" stroke-width="16"></g>
+            <!-- "now" is a tick across the band, not a hand from the centre — a
+                 centre hand runs straight through the text that lives there. -->
+            <g id="leo-ring-hand" transform="rotate(0 90 90)">
+              <line x1="90" y1="34" x2="90" y2="6" stroke="#e98aa8" stroke-width="3" stroke-linecap="round"></line>
+            </g>
+            <text id="leo-ring-lab" x="90" y="80" text-anchor="middle" class="ring-lab">—</text>
+            <text id="leo-ring-val" x="90" y="107" text-anchor="middle" class="ring-val">—</text>
+            <text x="90" y="14" text-anchor="middle" class="ring-tick">12a</text>
+            <text x="173" y="93" text-anchor="middle" class="ring-tick">6a</text>
+            <text x="90" y="177" text-anchor="middle" class="ring-tick">12p</text>
+            <text x="8" y="93" text-anchor="middle" class="ring-tick">6p</text>
+          </svg>
+        </div>
+        <div class="ring-tiles">
+          <div><span id="leo-ring-night" class="pair-num">—</span><span id="leo-ring-night-lab" class="pair-lab">last night</span></div>
+          <div><span id="leo-ring-naps" class="pair-num">—</span><span id="leo-ring-naps-lab" class="pair-lab">naps</span></div>
+        </div>
         <div id="leo-nap-pips" class="nap-dots"></div>
         <p id="leo-naps-why" class="wake-why"></p>
         <p id="leo-naps-list" class="naps-list"></p>
         <p id="leo-naps-next" class="naps-next"></p>
+        <div class="ring-legend">
+          <span><i class="rl night"></i>night</span>
+          <span><i class="rl nap"></i>nap</span>
+          <span><i class="rl next"></i>next</span>
+          <span><i class="rl now"></i>now</span>
+        </div>
       </section>
 
       <!-- 3. The log. At night this is scoped to the night and titled "Tonight" —

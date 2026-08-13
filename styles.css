@@ -590,7 +590,29 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 
 /* ---- Naps card (home) ----
    The hollow dots ARE the answer to "how many is he supposed to have". */
-.nap-dots { display: flex; gap: 10px; align-items: center; margin: 2px 0 10px; }
+/* ---- 24-hour ring ---- */
+.ring-wrap { display: flex; justify-content: center; margin: 2px 0 4px; }
+.ring { width: 200px; height: 200px; }
+.ring-night { stroke: #5e79ad; }
+.ring-nap   { stroke: var(--sage); }
+/* NB: never set stroke-dasharray here — CSS beats the inline attribute that
+   positions each arc, and the "next" band swallowed the whole ring. Thinner and
+   translucent reads as "not yet" without touching the dash. */
+.ring-next  { stroke: var(--sage-deep); opacity: .55; stroke-width: 7; }
+.ring-lab { fill: var(--ink-dim); font-size: 10.5px; font-family: "Inter", sans-serif; letter-spacing: .09em; text-transform: uppercase; }
+.ring-val { fill: var(--ink); font-size: 25px; font-family: "Fraunces", serif; }
+.ring-tick { fill: #8f8090; font-size: 9.5px; font-family: "Inter", sans-serif; }
+.ring-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 12px; text-align: center; }
+.ring-tiles > div { background: var(--bg-card-2); border-radius: 12px; padding: 11px 8px; }
+.ring-legend { display: flex; gap: 14px; justify-content: center; margin-top: 12px; font-size: 11.5px; color: var(--ink-dim); }
+.rl { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.rl.night { background: #5e79ad; }
+.rl.nap { background: var(--sage); }
+.rl.next { background: rgba(94,148,121,.5); border: 1px dashed var(--sage-deep); }
+.rl.now { background: var(--pink); }
+body.is-night .ring-night { stroke: #4a608c; }
+
+.nap-dots { display: flex; gap: 10px; align-items: center; margin: 2px 0 10px; justify-content: center; }
 .nap-dot {
   width: 15px; height: 15px; border-radius: 50%;
   border: 2px solid var(--sage-deep); background: transparent;

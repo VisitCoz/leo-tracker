@@ -511,7 +511,8 @@ function nightSleepStats(evts, cfg, t) {
   const ns = nightState(list, cfg, T);
   const from = ns.nightStart.getTime();
   const to = Math.min(T.getTime(), ns.morningAt.getTime());
-  let asleepMs = 0, longestMs = 0, segCount = 0;
+  let asleepMs = 0, longestMs = 0;
+  const segs = [];
   for (const e of list) {
     if (e.type !== "sleep") continue;
     // Segments, not rows: a night is one row with pauses now, so counting rows
@@ -521,14 +522,20 @@ function nightSleepStats(evts, cfg, t) {
       if (en <= s) continue;
       asleepMs += en - s;
       longestMs = Math.max(longestMs, en - s);
-      segCount++;
+      segs.push([s, en]);
     }
   }
+  segs.sort((x, y) => x[0] - y[0]);
+  const last = segs[segs.length - 1];
   return {
     asleepMin: Math.round(asleepMs / 60000),
     longestMin: Math.round(longestMs / 60000),
-    stretches: segCount,
-    wakes: Math.max(0, segCount - 1),
+    stretches: segs.length,
+    wakes: Math.max(0, segs.length - 1),
+    // The stretch he is in right now (asleep) or the one that just ended (awake).
+    // "How long has he been sleeping" means THIS stretch, not time since bedtime.
+    lastStretchMin: last ? Math.round((last[1] - last[0]) / 60000) : 0,
+    currentStart: last ? new Date(last[0]) : null,
     ns,
   };
 }
@@ -1486,7 +1493,15 @@ function renderLog(listId) {
       title = `Bottle · ${e.amount_ml || 0} ml`;
     } else if (e.type === "sleep") {
       title = `Sleep (${e.subtype || "?"})`;
-      meta = e.end_at ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${plDur(Math.round(span / 60000))}` : `${clockTime(start)} – running`;
+      // Asleep minutes, not wall-clock span — and say how many times he surfaced,
+      // otherwise a night with four wake-ups looks identical to one without.
+      const pz = sleepPauses(e);
+      const wakes = pz.done.length + (pz.open ? 1 : 0);
+      const asleepMin = Math.round(((e.end_at ? new Date(e.end_at) : now()) - start - pausedMsIn(e, start.getTime(), (e.end_at ? new Date(e.end_at) : now()).getTime(), now().getTime())) / 60000);
+      meta = (e.end_at
+        ? `${clockTime(start)} – ${clockTime(new Date(e.end_at))} · ${plDur(asleepMin)} asleep`
+        : `${clockTime(start)} – running · ${plDur(asleepMin)} asleep`)
+        + (wakes ? ` · ${wakes} wake-up${wakes === 1 ? "" : "s"}` : "");
     } else if (e.type === "bedtime") {
       const r = bedtimeRounds(e);
       title = isRescue(e) ? "Bedtime · rescue night" : `Bedtime settling · ${r} round${r === 1 ? "" : "s"}`;
@@ -2763,12 +2778,18 @@ function renderLeoWake() {
     track.classList.add("hidden");
     set(`${night ? "Night waking" : "Nap paused"} · ${clockTime(since)}`,
         heroTime(now() - since),
-        night ? "Awake in the night — still the same night." : "Awake — still the same nap.",
-        `Tap "Back to sleep" when he's down again. This won't count as a new ${night ? "night" : "nap"}.`,
+        night
+          ? `He slept <b>${plDur(nss.lastStretchMin)}</b> before this.`
+          : "Awake — still the same nap.",
+        night
+          ? `Still the same night. Keep it dark and quiet — morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))}, ${plDur(ns.minsToMorning)} away.`
+          : `Tap "Back to sleep" when he's down again. This won't count as a new nap.`,
         night ? "night" : "amber");
     if (night) {
-      pair(plDur(nss.asleepMin), "asleep so far tonight",
-           plFmt(hhmmToMin(cfg.night.morningWakeEarliest)), `the day starts, ${plDur(ns.minsToMorning)} away`);
+      // Two SLEEP numbers, because that's the question at 3am: how long was that
+      // stretch, and how much has he had in total.
+      pair(plDur(nss.lastStretchMin), "that stretch",
+           plDur(nss.asleepMin), "asleep in total tonight");
     } else {
       pair(plDur(st.napMins), "day sleep today",
            `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
@@ -2781,13 +2802,16 @@ function renderLeoWake() {
     track.classList.add("hidden");
     const nss = nightSleepStats(null, cfg);
     if (w.asleep) {
-      set(`Tonight · down at ${clockTime(ns.nightStart)}`,
-          heroTime(now() - new Date(w.asleep.start_at)),
-          "Asleep for the night.",
+      // THIS stretch, not time since bedtime. After a 3am resettle the old version
+      // read "7h 35m" when he'd been back down for fifty minutes.
+      const since = nss.currentStart || new Date(w.asleep.start_at);
+      set(`Asleep since ${clockTime(since)}`,
+          heroTime(now() - since),
+          nss.wakes ? `Back down after ${nss.wakes} wake-up${nss.wakes === 1 ? "" : "s"}.` : "Asleep for the night.",
           `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
           "night");
-      pair(plDur(nss.asleepMin), "total asleep tonight",
-           String(nss.wakes), nss.wakes === 1 ? "wake-up so far" : "wake-ups so far");
+      pair(plDur(nss.asleepMin), "asleep in total tonight",
+           clockTime(ns.nightStart), "went down at");
       return;
     }
     if (ns.logged) {
@@ -3003,7 +3027,7 @@ function renderSleepActions(w, cfg) {
   // it in the key the memo would keep the stale label across the boundary.
   const paused = isPaused(w.asleep);
   const sig = `${ns.isNight}:${ns.logged}:` + (
-    w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
+    w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}:${ns.minsToMorning <= 60}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -3024,7 +3048,10 @@ function renderSleepActions(w, cfg) {
     // Same sleep, still open. Resume is the big one — going back down is the
     // common case; ending is what you do once he's actually up.
     mk("btn-sleep btn-block btn-night", "▶ Back to sleep", () => resumeSleep());
-    mk("btn-ghost btn-block", ns.isNight ? "Up for the day" : "End nap", () => endSleep());
+    // At 3:04am "Up for the day" is not a real option — it's just something to
+    // mis-tap. It only appears within an hour of morning.
+    if (!ns.isNight) mk("btn-ghost btn-block", "End nap", () => endSleep());
+    else if (ns.minsToMorning <= 60) mk("btn-ghost btn-block", "Up for the day", () => endSleep());
   } else if (ns.isNight) {
     // The word "nap" must never appear between bedtime and morning. At 1am the only
     // thing a parent needs is one big button, and it must write subtype "night".

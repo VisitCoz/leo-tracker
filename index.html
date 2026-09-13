@@ -147,6 +147,39 @@
       </section>
     </section>
 
+    <!-- ============ DAY — the SECOND home screen ============
+         The Leo home answers "what is happening right now". This one answers "how
+         did the day go", and it keeps answering it at 3am — which is the hour the
+         home can't: there the log narrows to "Tonight" and the 24-hour card is
+         hidden, so the day's naps are on screen nowhere. Nothing here is
+         recomputed: sleepDayStats() for the naps, nightState() for which day we
+         are in, wakeState() for the window, nightSleepStats() for the night. -->
+    <section id="tab-day" class="tab hidden">
+      <!-- 1. One quiet line of "now" — enough to anchor the screen in time without
+              cloning the home's 64px hero timer. -->
+      <section id="day-now" class="card day-now">
+        <p id="day-now-eyebrow" class="card-eyebrow">—</p>
+        <p id="day-now-val" class="day-now-val">—</p>
+        <p id="day-now-why" class="wake-why"></p>
+      </section>
+
+      <!-- 2. THE POINT OF THIS SCREEN: every nap of the waking day — start, end,
+              length — plus the awake stretch between each one, at any hour. -->
+      <section class="card">
+        <div class="card-head"><h2 id="day-naps-title">Naps today</h2><span id="day-naps-total" class="since">—</span></div>
+        <ul id="day-list" class="day-list"></ul>
+        <p id="day-target" class="wake-why"></p>
+      </section>
+
+      <!-- 3. The night that brackets this day: tonight while it's running, and the
+              one that ENDED this morning once the day is under way. -->
+      <section id="day-night-card" class="card hidden">
+        <div class="card-head"><h2 id="day-night-title">Tonight</h2><span id="day-night-total" class="since">—</span></div>
+        <p id="day-night-line" class="day-night-line">—</p>
+        <p id="day-night-why" class="wake-why"></p>
+      </section>
+    </section>
+
     <!-- ============ HOME TAB (kept — reachable via ⋯ More) ============ -->
     <section id="tab-home" class="tab hidden">
       <!-- The duplicate wake card that used to sit here is gone. It was a second
@@ -293,6 +326,7 @@
     <!-- ============ BOTTOM NAV ============ -->
     <nav class="bottomnav">
       <button class="nav-btn active" data-tab="leo"><span>🏠</span>Leo</button>
+      <button class="nav-btn" data-tab="day"><span>🕑</span>Day</button>
       <button class="nav-btn" data-tab="grow"><span>📈</span>Growth</button>
       <button class="nav-btn" data-tab="sleep"><span>🌙</span>Training</button>
       <button class="nav-btn" data-tab="food"><span>🍽️</span>Food</button>

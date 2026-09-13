@@ -683,6 +683,7 @@ async function loadEvents() {
   renderLog("log-list");       // old Home log (kept)
   renderLog("leo-log-list");   // Leo home log — data-driven, not per-second
   renderNaps();                // nap dots + list
+  renderDay();                 // second home — the day's naps, data-driven too
   renderAlerts();
   // The day bar / budget / night patterns live under Training → Patterns now, and
   // renderSleep() fills them when that sub-tab is open.
@@ -1279,6 +1280,7 @@ function render() {
     if (trainView === "patterns") tickNow();   // moves ONE element
   }
   if (tabOpen("leo")) tickRing();          // one rotation, nothing rebuilt
+  if (tabOpen("day")) tickDay();           // one number, nothing rebuilt
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -1640,6 +1642,7 @@ function switchTab(name) {
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   if (name === "leo")      { renderLeoWake(); renderNaps(); renderAlerts(true); }
+  if (name === "day")      renderDay();
   if (name === "grow")     renderGrowth();      // also (re)builds the charts now the canvas is visible
   if (name === "food")     renderFood();
   if (name === "planner")  renderPlanner();
@@ -3457,6 +3460,154 @@ function renderSettings() {
 }
 
 // ============================================================
+//  10h-3. DAY — the SECOND home screen
+// ============================================================
+// The Leo home answers "what is happening right now". At night it narrows to the
+// night on purpose — renderLog() titles itself "Tonight" and renderLeoWake()
+// hides the 24-hour card — and the side effect is that at 3am the day's naps are
+// on screen nowhere, so you can't read how the day that caused this night went.
+//
+// This screen is that other question, at every hour. It derives NOTHING:
+// sleepDayStats() for the naps, nightState() for which day we're in and whether
+// it's night, wakeState() for the window, nightSleepStats() for the night,
+// cfgNow() for the targets. No alerts here — those stay on the home.
+const DAY_ORD = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
+
+// Set by renderDay, read by tickDay: the one number that moves every second.
+let _dayNowSince = null;
+
+function renderDay() {
+  const list = $("day-list");
+  if (!list) return;
+  const cfg = cfgNow();
+  const T = now();
+  const ns = nightState(null, cfg, T);
+  const w = wakeState(null, cfg, T);
+
+  // WHICH day this screen is about. Not the calendar day: at 3:16am the day worth
+  // reading is the one that just ended, and nightState() already knows which night
+  // we're in — its anchor IS that day. Only the night branch looks back, because
+  // before noon the anchor is yesterday even when the night is over (7am).
+  const lookBack = ns.isNight && ns.anchorDate.toDateString() !== T.toDateString();
+  const dayRef = lookBack
+    ? new Date(ns.anchorDate.getFullYear(), ns.anchorDate.getMonth(), ns.anchorDate.getDate(), 23, 59, 59)
+    : T;
+  const sameDay = !lookBack;   // "today" for every label below, not just after noon
+  const st = sleepDayStats(null, dayRef);
+
+  // The two night sleeps that bracket a waking day: the first one ENDED that
+  // morning, and the last one that starts after it is that evening's bedtime.
+  const nights = st.blocks.filter((b) => b.kind === "night");
+  const morning = nights.find((b) => b.endAt) || null;
+  const bedtime = nights.filter((b) => !morning || b.startAt > morning.endAt).pop() || null;
+
+  const rows = [];
+  if (morning) rows.push({ mark: "☀️", label: "Up for the day", at: morning.endAt });
+  st.naps.forEach((b, i) => rows.push({ nap: b, ord: DAY_ORD[i] || String(i + 1) }));
+  if (bedtime) rows.push({ mark: "🌙", label: "Down for the night", at: bedtime.startAt });
+
+  let html = "", prevEnd = null;
+  for (const r of rows) {
+    const from = r.nap ? r.nap.startAt.getTime() : r.at.getTime();
+    // The awake stretch between two sleeps. This is the part that tells you how the
+    // day actually ran — a 45-minute nap after 4h awake is a different day from the
+    // same nap after 90 minutes.
+    if (prevEnd !== null && from > prevEnd) {
+      html += `<li class="day-gap">awake ${plDur(Math.round((from - prevEnd) / 60000))}</li>`;
+    }
+    if (r.nap) {
+      const b = r.nap;
+      const end = b.running ? (sameDay ? "now" : "still running") : clockTime(b.endAt);
+      html += `<li class="day-row${b.running ? " running" : ""}">` +
+        `<span class="day-ord">${r.ord}</span>` +
+        `<span class="day-span">${clockTime(b.startAt)} – ${end}` +
+        // fullMins excludes the minutes he was awake mid-nap, so say when that
+        // happened — otherwise 8:00–9:00 printing "45m" looks like a bug.
+        (b.pauseCount ? ` · ${b.pauseCount} wake-up${b.pauseCount === 1 ? "" : "s"}` : "") +
+        `</span><span class="day-len">${plDur(b.fullMins)}${b.running ? " so far" : ""}</span></li>`;
+      prevEnd = b.running ? Math.min(T.getTime(), dayRef.getTime()) : b.endAt.getTime();
+    } else {
+      html += `<li class="day-row mark"><span class="day-ord">${r.mark}</span>` +
+        `<span class="day-span">${r.label}</span>` +
+        `<span class="day-len">${clockTime(r.at)}</span></li>`;
+      prevEnd = r.at.getTime();
+    }
+  }
+  if (!st.naps.length) {
+    html = `<li class="day-row muted"><span class="day-ord">—</span>` +
+      `<span class="day-span">No naps logged ${sameDay ? "yet today" : "that day"}</span>` +
+      `<span class="day-len"></span></li>` + html;
+  }
+  list.innerHTML = html;
+
+  $("day-naps-title").textContent = sameDay
+    ? "Naps today"
+    : `Naps on ${dayRef.toLocaleDateString([], { weekday: "long" })}`;
+  $("day-naps-total").textContent = `${st.napCount} nap${st.napCount === 1 ? "" : "s"} · ${plDur(st.napMins)}`;
+  $("day-target").textContent = `Target at ${cfg.band}: ${cfg.naps.minCount}–${cfg.naps.maxCount} naps, ` +
+    `${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
+
+  // ---- The "now" line. Same three anchors the home hero uses, read off
+  // wakeState()/nightSleepStats() rather than measured again here.
+  const nss = nightSleepStats(null, cfg, T);
+  const pause = w.asleep ? sleepPauses(w.asleep) : null;
+  let eyebrow = "", since = null;
+  if (w.asleep && pause.open) {
+    eyebrow = ns.isNight ? "Awake in the night since" : "Nap paused since";
+    since = new Date(pause.open);
+  } else if (w.asleep) {
+    eyebrow = ns.isNight ? "Asleep since" : "Napping since";
+    since = ns.isNight ? (nss.currentStart || new Date(w.asleep.start_at)) : new Date(w.asleep.start_at);
+  } else if (w.wokeAt) {
+    eyebrow = "Awake since";
+    since = w.wokeAt;
+  }
+  _dayNowSince = since ? since.getTime() : null;
+  $("day-now-eyebrow").textContent = since ? `${eyebrow} ${clockTime(since)}` : "Nothing logged yet";
+  $("day-now-why").textContent = ns.isNight
+    ? `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`
+    : w.asleep
+      ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
+      : w.opensAt
+        ? `Next sleep window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}.`
+        : "Log a sleep and the day builds itself.";
+  // Near-black at night, zero chroma — a lit card is a wake-up signal in a dark room.
+  $("day-now").classList.toggle("zone-night", ns.isNight);
+  // renderLeoWake() sets this too, but only while the home is the open tab: left on
+  // this screen overnight the app would never dim. Both toggles read the same
+  // nightState(), so they cannot disagree.
+  document.body.classList.toggle("is-night", ns.isNight);
+  tickDay();
+
+  // ---- The night that brackets this day. While it's running that's tonight, live
+  // from nightSleepStats(). Once the day is under way it's the night that ended
+  // this morning — read off the same block that gave us the wake time above, so
+  // there is no third way of counting a night anywhere in the app.
+  const wakeups = (n) => `${n} wake-up${n === 1 ? "" : "s"}`;
+  $("day-night-card").classList.toggle("hidden", !ns.isNight && !morning);
+  if (ns.isNight) {
+    $("day-night-title").textContent = "Tonight";
+    $("day-night-total").textContent = `${plDur(nss.asleepMin)} asleep`;
+    $("day-night-line").textContent = `Down at ${clockTime(ns.nightStart)} · longest stretch ` +
+      `${plDur(nss.longestMin)} · ${wakeups(nss.wakes)}`;
+  } else if (morning) {
+    $("day-night-title").textContent = "Last night";
+    $("day-night-total").textContent = `${plDur(morning.fullMins)} asleep`;
+    $("day-night-line").textContent = `Down at ${clockTime(morning.startAt)} · up at ` +
+      `${clockTime(morning.endAt)} · ${morning.pauseCount ? wakeups(morning.pauseCount) : "no wake-ups logged"}`;
+  }
+  $("day-night-why").textContent = `At ${cfg.band} a night of ` +
+    `${plDur(cfg.night.expectedNightSleep[0])}–${plDur(cfg.night.expectedNightSleep[1])} is normal.`;
+}
+
+// The only thing that moves every second on this screen: one number, in words.
+function tickDay() {
+  const el = $("day-now-val");
+  if (!el) return;
+  el.textContent = _dayNowSince ? dur(now() - _dayNowSince) : "—";
+}
+
+// ============================================================
 //  10i. GROWTH — weight/height + WHO percentiles + curves
 //  WHO Child Growth Standards, boys. LMS anchors (interpolated
 //  between); dense 0–12 mo, sparser after. Percentiles approximate
@@ -3805,7 +3956,7 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
 function _redrawAll() {
-  render(); renderNaps(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
+  render(); renderNaps(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
 }
 
@@ -3836,11 +3987,13 @@ window.leoDebug = {
     const d = dismissedMap();
     return evaluateAlerts().map((a) => ({ id: a.id, sev: a.sev, key: a.key, push: !!a.push, dismissed: !!d[a.key], title: a.title }));
   },
-  // "06:10 wake, 08:00-08:45 nap, 11:30-12:50 nap, 16:40- nap" (open end = running).
+  // "06:10 wake, 08:00-08:45 nap, 16:40- nap" (open end = running). `dayShift` lays
+  // the day down on another date: -1 is what you need to test 3am, where the day
+  // being read is YESTERDAY's and a day built on today would be in the future.
   // In memory only — nothing is written to Supabase. Reload to get real data back.
-  fakeDay(spec) {
+  fakeDay(spec, dayShift) {
     const base = now();
-    const day0 = new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime();
+    const day0 = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (dayShift || 0)).getTime();
     const mk = (m) => new Date(day0 + m * 60000).toISOString();
     const out = [];
     let n = 0;

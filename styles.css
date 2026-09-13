@@ -867,6 +867,28 @@ body.is-night .ring-night { stroke: #4a608c; }
 .leo-tiles { grid-template-columns: 1fr 1fr; }
 .leo-log-hint { font-size: 12px; color: var(--ink-dim); margin: -4px 0 8px; }
 
+/* ---- Day view (the second home) ----
+   Deliberately flat: rows, not blocks. The home screen already owns the big
+   timer and the clock-face, so this one is a readable list you can scan with one
+   thumb — clock times left, length right, the awake stretch between them. */
+.day-now { text-align: center; }
+.day-now-val { font-family: "Fraunces", serif; font-size: 34px; margin: 4px 0 0;
+  line-height: 1.1; font-variant-numeric: tabular-nums; }
+.day-list { list-style: none; margin: 0; padding: 0; }
+.day-row { display: flex; align-items: baseline; gap: 10px; padding: 11px 0; border-top: 1px solid #36283d; }
+.day-row:first-child { border-top: none; }
+.day-ord { flex: none; width: 30px; font-size: 12px; font-weight: 700; color: var(--ink-dim); }
+.day-span { flex: 1; font-size: 15px; font-variant-numeric: tabular-nums; }
+.day-len { font-family: "Fraunces", serif; font-size: 17px; color: var(--sage);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.day-row.running .day-len { color: var(--pink); }
+.day-row.mark .day-span { color: var(--ink-dim); }
+.day-row.mark .day-len { color: var(--ink); }
+.day-row.muted .day-span { color: var(--ink-dim); }
+/* The awake stretch between two sleeps — the part that tells you how the day ran. */
+.day-gap { font-size: 12px; color: var(--ink-dim); padding: 3px 0 3px 40px; }
+.day-night-line { margin: 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+
 /* ---- Ask card ---- */
 .leo-ask { display: flex; align-items: center; gap: 12px; cursor: pointer;
   background: linear-gradient(150deg, #3a2338, #2a1a2e); }

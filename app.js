@@ -341,7 +341,12 @@ function sleepSegments(e, nowMs) {
   const start = new Date(e.start_at).getTime();
   const end = e.end_at ? new Date(e.end_at).getTime() : nowMs;
   const p = sleepPauses(e);
-  const cuts = p.done.map(([a, b]) => [new Date(a).getTime(), new Date(b).getTime()]);
+  // A zero-length pause is a "He woke up" tap: a wake-up counted without an awake
+  // interval. It must NOT cut the stretch — the question at 3am is how long he has
+  // been asleep, and cutting here would restart that clock on every tap.
+  const cuts = p.done
+    .map(([a, b]) => [new Date(a).getTime(), new Date(b).getTime()])
+    .filter(([a, b]) => b > a);
   if (p.open) cuts.push([new Date(p.open).getTime(), end]);
   cuts.sort((x, y) => x[0] - y[0]);
   const segs = [];
@@ -511,10 +516,16 @@ function nightSleepStats(evts, cfg, t) {
   const ns = nightState(list, cfg, T);
   const from = ns.nightStart.getTime();
   const to = Math.min(T.getTime(), ns.morningAt.getTime());
-  let asleepMs = 0, longestMs = 0;
+  let asleepMs = 0, longestMs = 0, taps = 0;
   const segs = [];
   for (const e of list) {
     if (e.type !== "sleep") continue;
+    // "He woke up" taps are zero-length pauses, which deliberately don't cut the
+    // stretch — so segments can't see them and the night would read "no wake-ups".
+    for (const [a, b] of sleepPauses(e).done) {
+      const t0 = new Date(a).getTime();
+      if (new Date(b).getTime() <= t0 && t0 >= from && t0 <= to) taps++;
+    }
     // Segments, not rows: a night is one row with pauses now, so counting rows
     // would report one stretch for a night with four wake-ups.
     for (const [a, b] of sleepSegments(e, T.getTime())) {
@@ -531,7 +542,7 @@ function nightSleepStats(evts, cfg, t) {
     asleepMin: Math.round(asleepMs / 60000),
     longestMin: Math.round(longestMs / 60000),
     stretches: segs.length,
-    wakes: Math.max(0, segs.length - 1),
+    wakes: Math.max(0, segs.length - 1) + taps,
     // The stretch he is in right now (asleep) or the one that just ended (awake).
     // "How long has he been sleeping" means THIS stretch, not time since bedtime.
     lastStretchMin: last ? Math.round((last[1] - last[0]) / 60000) : 0,
@@ -861,6 +872,20 @@ async function resumeSleep() {
   await sb.from("events")
     .update({ note: JSON.stringify({ pauses: [...p.done, [p.open, now().toISOString()]] }) })
     .eq("id", running.id);
+  await loadEvents();
+}
+
+// ---- "He woke up" — the night counter. Emma wants the number of times he
+// surfaced WITHOUT losing how long he has been asleep, so this is NOT a pause:
+// it appends a zero-length interval, which counts as a wake-up in every readout
+// and, having no awake minutes, subtracts nothing and never cuts the stretch.
+// It never sets `open`, so there is no state flip and no "Back to sleep" to tap.
+async function noteNightWake() {
+  const running = openSleep();
+  if (!running || isPaused(running)) return;
+  const t = now().toISOString();
+  const p = sleepPauses(running);
+  await sb.from("events").update({ note: JSON.stringify({ pauses: [...p.done, [t, t]] }) }).eq("id", running.id);
   await loadEvents();
 }
 
@@ -3086,7 +3111,9 @@ function renderSleepActions(w, cfg) {
     // The word "nap" must never appear between bedtime and morning. At 1am the only
     // thing a parent needs is one big button, and it must write subtype "night".
     if (w.asleep) {
-      mk("btn-sleep btn-block active", "⏸ He's awake", () => pauseSleep());
+      // Counting, not pausing: the clock and the asleep total must run through the
+      // tap, because "how long has he been asleep" is the only 3am question.
+      mk("btn-sleep btn-block active", "He woke up", () => noteNightWake());
     } else if (ns.logged) {
       mk("btn-sleep btn-block btn-night", "😴 Back to sleep", () => startSleep("night"));
     } else {

@@ -1460,24 +1460,33 @@ const EMOJI = { breast: "🤱", bottle: "🍼", sleep: "😴", milestone: "✨",
 function renderLog(listId) {
   const list = $(listId || "log-list");
   if (!list) return;
-  // At night, show THE NIGHT rather than the calendar day. Filtering on isToday()
-  // meant that at 1:43am the screen said "No entries yet today" — an empty log on
-  // the one night you most need to see what already happened.
+  // At night, NOT the calendar day. Filtering on isToday() meant that at 1:43am the
+  // screen said "No entries yet today" — an empty log on the one night you most need
+  // to see what already happened. Scoping it to the night alone fixed that but threw
+  // away the day that caused the night, so at night it carries both.
   const ns = nightState();
   const nightScoped = ns.isNight && listId === "leo-log-list";
   const title = $("leo-log-title");
-  if (title) title.textContent = nightScoped ? "Tonight" : "Today's log";
-  const today = nightScoped
-    ? events.filter((e) => {
-        const t = new Date(e.start_at).getTime();
-        return t >= ns.nightStart.getTime() && t < ns.morningAt.getTime();
-      })
+  if (title) title.textContent = nightScoped ? "Today & tonight" : "Today's log";
+  let today;
+  if (nightScoped) {
+    // Two halves of one reading, day first and tonight last: every row of the waking
+    // day nightState() anchors us to (after midnight that's yesterday), then every row
+    // since bedtime. `events` is newest-first, so each half keeps that order.
+    const bed = ns.nightStart.getTime();
+    const inWindow = (a, b) => events.filter((e) => {
+      const t = new Date(e.start_at).getTime();
+      return t >= a && t < b;
+    });
+    today = inWindow(ns.anchorDate.getTime(), bed).concat(inWindow(bed, ns.morningAt.getTime()));
+  } else {
     // Overlaps today, not just started today. Last night's sleep began at 7:32pm
     // YESTERDAY, so filtering on start_at alone made the entire night vanish from
     // the screen the moment it flipped to day mode at 6am.
-    : events.filter((e) => isToday(e.start_at) || (e.end_at && isToday(e.end_at)));
+    today = events.filter((e) => isToday(e.start_at) || (e.end_at && isToday(e.end_at)));
+  }
   if (today.length === 0) {
-    list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged tonight yet." : "No entries yet today."}</li>`;
+    list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged today or tonight yet." : "No entries yet today."}</li>`;
     return;
   }
 

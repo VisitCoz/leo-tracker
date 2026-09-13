@@ -610,7 +610,23 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .rl.nap { background: var(--sage); }
 .rl.next { background: rgba(94,148,121,.5); border: 1px dashed var(--sage-deep); }
 .rl.now { background: var(--pink); }
-body.is-night .ring-night { stroke: #4a608c; }
+/* Night. This card now STAYS on the home at 3am — it is the only picture of the day
+   that caused the night — so every lit thing in it comes down: muted arcs instead of
+   sage and blue, flat tiles, a dimmed "now" tick. Nothing here changes the dash
+   attributes that position the arcs. */
+body.is-night #leo-naps-card { background: linear-gradient(160deg, #221a28, #1b1320); }
+body.is-night .ring-night { stroke: #3f5377; }
+body.is-night .ring-nap { stroke: #566f60; }
+body.is-night .ring-next { opacity: .28; }
+body.is-night .ring-val { fill: #c9bccd; }
+body.is-night .ring-lab, body.is-night .ring-tick { fill: #7a6d7c; }
+body.is-night .ring-tiles > div { background: #241b2a; }
+body.is-night #leo-ring-hand line { stroke: #8c5f70; }
+body.is-night .nap-dot { border-color: #3f5547; }
+body.is-night .nap-dot.on { background: #566f60; border-color: #566f60; }
+body.is-night .rl.night { background: #3f5377; }
+body.is-night .rl.nap { background: #566f60; }
+body.is-night .rl.now { background: #8c5f70; }
 
 .nap-dots { display: flex; gap: 10px; align-items: center; margin: 2px 0 10px; justify-content: center; }
 .nap-dot {

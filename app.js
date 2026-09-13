@@ -2737,8 +2737,10 @@ function renderLeoWake() {
 
   // Softens every white ~8% and kills the pulse animations. No-op when unchanged.
   document.body.classList.toggle("is-night", ns.isNight);
-  const napsCard = $("leo-naps-card");
-  if (napsCard) napsCard.classList.toggle("hidden", ns.isNight);
+  // The 24-hour card used to be hidden here at night, and that put the day's naps
+  // on screen nowhere at 3am — the one hour you want to read how the day that
+  // caused this night went. It stays up now; styles.css mutes its arcs under
+  // body.is-night so the card never lights a dark room.
 
   const set = (eyebrow, hero, status, why, zone) => {
     $("leo-wake-eyebrow").textContent = eyebrow;
@@ -2986,7 +2988,17 @@ function renderNaps() {
   if (!host) return;
   renderRing();
   const cfg = cfgNow();
-  const st = sleepDayStats();
+  // WHICH day the dots and the list are about. The ring itself is rolling-24h and
+  // needs no help, but sleepDayStats() clips to the CALENDAR day — so at 3:16am it
+  // would print "No naps yet today" underneath a ring full of yesterday's arcs. At
+  // night the day worth reading is the one that just ended, which is the anchor
+  // nightState() already holds.
+  const T = now();
+  const ns = nightState(null, cfg, T);
+  const lookBack = ns.isNight && ns.anchorDate.toDateString() !== T.toDateString();
+  const st = sleepDayStats(null, lookBack
+    ? new Date(ns.anchorDate.getFullYear(), ns.anchorDate.getMonth(), ns.anchorDate.getDate(), 23, 59, 59)
+    : T);
   const cap = cfg.naps.maxCount;
 
   let dots = "";
@@ -3005,14 +3017,18 @@ function renderNaps() {
     ? st.naps.map((b, i) =>
         `<span class="nap-item"><b>${ord[i] || i + 1}</b> ${clockTime(b.startAt)} · ` +
         `${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
-    : `<span class="nap-item muted">No naps yet today.</span>`;
+    : `<span class="nap-item muted">${lookBack ? "No naps logged that day." : "No naps yet today."}</span>`;
 
   const w = wakeState(null, cfg);
-  $("leo-naps-next").textContent = w.asleep
-    ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
-    : w.opensAt
-      ? `Next nap window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}. Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}.`
-      : "";
+  // At night the hero card and the ring centre already answer "what happens next",
+  // so a nap-window sentence here at 3am is noise on the one screen that must stay calm.
+  $("leo-naps-next").textContent = ns.isNight
+    ? ""
+    : w.asleep
+      ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
+      : w.opensAt
+        ? `Next nap window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}. Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}.`
+        : "";
 }
 
 // ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,

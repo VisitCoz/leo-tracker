@@ -889,6 +889,24 @@ async function noteNightWake() {
   await loadEvents();
 }
 
+// ---- Remove ONE wake-up. The night's count is the number Emma reads in the
+// morning, so a mis-tap at 3am has to be fixable on its own — deleting the whole
+// sleep row to correct it would throw the night away with it. Same write as the
+// pause code: the note JSON, minus that one interval.
+async function removeSleepPause(id, idx) {
+  const e = events.find((x) => x.id === id);
+  if (!e) return;
+  const p = sleepPauses(e);
+  if (idx < 0 || idx >= p.done.length) return;
+  const done = p.done.slice();
+  done.splice(idx, 1);
+  // An open pause stays open — he may be awake right now.
+  await sb.from("events")
+    .update({ note: JSON.stringify(p.open ? { pauses: done, open: p.open } : { pauses: done }) })
+    .eq("id", id);
+  await loadEvents();
+}
+
 // ---- Bedtime sessions ---------------------------------------
 // The gap between "into the crib" and "asleep" is the number the whole training
 // programme is judged on — Phase 2 (nap conversion) unlocks at ≤15 minutes for
@@ -1580,7 +1598,47 @@ function renderLog(listId) {
     });
     li.appendChild(del);
     list.appendChild(li);
+
+    // Every wake-up on its own line under the sleep, oldest first, each with its
+    // own bin. Without this the log says "3 wake-ups" and a mis-tap at 3am can
+    // only be undone by deleting the whole night.
+    if (e.type === "sleep") {
+      sleepPauses(e).done
+        .map(([a, b], i) => ({ a, b, i }))
+        .sort((x, y) => new Date(x.a) - new Date(y.a))
+        .forEach(({ a, b, i }) => list.appendChild(wakeSubRow(e, a, b, i)));
+    }
   }
+}
+
+// One wake-up inside a sleep row. A zero-length pause is a "He woke up" tap and
+// has only a time; a real pause also has an end and a length.
+function wakeSubRow(e, a, b, idx) {
+  const t0 = new Date(a), t1 = new Date(b);
+  const span = t1 - t0;
+  const li = document.createElement("li");
+  li.className = "log-item log-sub";
+  li.innerHTML = `<span class="log-emoji">⤷</span><div class="log-body"><div class="log-sub-text"></div></div>`;
+  const body = li.querySelector(".log-sub-text");
+  body.append("🌙 Woke up ");
+  const when = document.createElement("b");
+  when.textContent = span > 0 ? `${clockTime(t0)} – ${clockTime(t1)}` : clockTime(t0);
+  body.append(when);
+  if (span > 0) body.append(` · ${dur(span)}`);
+
+  // Same inline two-step confirm the row above uses — never browser confirm().
+  const del = document.createElement("button");
+  del.className = "del-btn"; del.textContent = "🗑";
+  del.addEventListener("click", () => {
+    const wrap = document.createElement("span");
+    wrap.className = "del-confirm";
+    wrap.innerHTML = `<button class="del-yes">Delete</button><button class="del-no">Keep</button>`;
+    del.replaceWith(wrap);
+    wrap.querySelector(".del-yes").addEventListener("click", () => removeSleepPause(e.id, idx));
+    wrap.querySelector(".del-no").addEventListener("click", () => wrap.replaceWith(del));
+  });
+  li.appendChild(del);
+  return li;
 }
 
 // ============================================================
@@ -3068,6 +3126,9 @@ function renderNaps() {
 // ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,
 // because replacing a button every second makes it impossible to tap.
 let _sleepActionsSig = null;
+// "He's up for the day" asks once before it closes the night. The answer lives
+// here, not in the DOM, because the buttons are rebuilt from the signature below.
+let _upForDayConfirm = false;
 function renderSleepActions(w, cfg) {
   const host = $("leo-sleep-actions");
   if (!host) return;
@@ -3081,20 +3142,27 @@ function renderSleepActions(w, cfg) {
   // open sleep row reads "He's awake" at 5:55am and "End sleep" at 6:05, and without
   // it in the key the memo would keep the stale label across the boundary.
   const paused = isPaused(w.asleep);
-  const sig = `${ns.isNight}:${ns.logged}:` + (
+  // Self-clearing: the question only exists in the night + asleep + not-paused
+  // branch, so leaving that branch answers it "not yet" without saving anything.
+  const confirming = _upForDayConfirm && ns.isNight && !!w.asleep && !paused;
+  _upForDayConfirm = confirming;
+  const sig = `${ns.isNight}:${ns.logged}:${confirming}:` + (
     w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}:${ns.minsToMorning <= 60}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
 
-  const mk = (cls, text, fn) => {
+  const mk = (cls, text, fn, parent) => {
     const b = document.createElement("button");
     b.className = `btn ${cls}`;
     b.textContent = text;
     b.addEventListener("click", fn);
-    host.appendChild(b);
+    (parent || host).appendChild(b);
     return b;
   };
+  // Re-draw now, not on the next tick: a button that swaps a second after the tap
+  // gets tapped twice.
+  const again = () => renderSleepActions(wakeState(null, cfg), cfg);
 
   if (bed && !w.asleep) {
     mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
@@ -3113,7 +3181,27 @@ function renderSleepActions(w, cfg) {
     if (w.asleep) {
       // Counting, not pausing: the clock and the asleep total must run through the
       // tap, because "how long has he been asleep" is the only 3am question.
-      mk("btn-sleep btn-block active", "He woke up", () => noteNightWake());
+      // Under it, the morning exit — the one tap that ends the night. Stacked, so
+      // the big green one is still what a half-asleep thumb finds in the dark.
+      const stack = document.createElement("div");
+      stack.className = "sleep-stack";
+      host.appendChild(stack);
+      if (!confirming) {
+        mk("btn-sleep btn-block active", "🌙 He woke up", () => noteNightWake(), stack);
+        mk("btn-ghost btn-block", "☀️ He's up for the day", () => { _upForDayConfirm = true; again(); }, stack);
+      } else {
+        // Ending the night is the only action here you can't take back from this
+        // screen, so it asks — once, and never on the 3am button.
+        const q = document.createElement("p");
+        q.className = "sleep-confirm-q";
+        q.textContent = `Up for the day? This ends the night at ${clockTime(now())}.`;
+        stack.appendChild(q);
+        const pairEl = document.createElement("div");
+        pairEl.className = "sleep-confirm";
+        stack.appendChild(pairEl);
+        mk("btn-confirm-yes", "✓ Yes, he's up", () => { _upForDayConfirm = false; endSleep(); }, pairEl);
+        mk("btn-ghost", "✕ Not yet", () => { _upForDayConfirm = false; again(); }, pairEl);
+      }
     } else if (ns.logged) {
       mk("btn-sleep btn-block btn-night", "😴 Back to sleep", () => startSleep("night"));
     } else {

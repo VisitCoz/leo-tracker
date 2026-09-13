@@ -1288,8 +1288,10 @@ function render() {
 function renderTopBanner() {
   const el = $("topbanner");
   if (!el) return;
-  // On the Leo tab the headline card says all of this, ten pixels lower.
-  if (tabOpen("leo")) { el.classList.add("hidden"); return; }
+  // On the Leo tab the headline card says all of this, ten pixels lower — and so
+  // does the Day screen's "now" line. (It also renders zone-green while he's
+  // asleep, which at 3am is a lit green bar in a dark room.)
+  if (tabOpen("leo") || tabOpen("day")) { el.classList.add("hidden"); return; }
   const w = wakeState();
   if (w.asleep) {
     el.className = "topbanner zone-green";

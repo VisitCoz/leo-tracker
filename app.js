@@ -341,9 +341,9 @@ function sleepSegments(e, nowMs) {
   const start = new Date(e.start_at).getTime();
   const end = e.end_at ? new Date(e.end_at).getTime() : nowMs;
   const p = sleepPauses(e);
-  // A zero-length pause is a "He woke up" tap: a wake-up counted without an awake
-  // interval. It must NOT cut the stretch — the question at 3am is how long he has
-  // been asleep, and cutting here would restart that clock on every tap.
+  // A zero-length pause is an OLD "He woke up" marker (the app wrote these for one
+  // day in Sep 2026): a wake-up with no awake interval. There is nothing to cut the
+  // stretch with, so it is skipped and those nights still read correctly.
   const cuts = p.done
     .map(([a, b]) => [new Date(a).getTime(), new Date(b).getTime()])
     .filter(([a, b]) => b > a);
@@ -520,8 +520,8 @@ function nightSleepStats(evts, cfg, t) {
   const segs = [];
   for (const e of list) {
     if (e.type !== "sleep") continue;
-    // "He woke up" taps are zero-length pauses, which deliberately don't cut the
-    // stretch — so segments can't see them and the night would read "no wake-ups".
+    // Old zero-length markers don't cut the stretch, so segments can't see them and
+    // those nights would read "no wake-ups". Counted here, never written any more.
     for (const [a, b] of sleepPauses(e).done) {
       const t0 = new Date(a).getTime();
       if (new Date(b).getTime() <= t0 && t0 >= from && t0 <= to) taps++;
@@ -875,19 +875,12 @@ async function resumeSleep() {
   await loadEvents();
 }
 
-// ---- "He woke up" — the night counter. Emma wants the number of times he
-// surfaced WITHOUT losing how long he has been asleep, so this is NOT a pause:
-// it appends a zero-length interval, which counts as a wake-up in every readout
-// and, having no awake minutes, subtracts nothing and never cuts the stretch.
-// It never sets `open`, so there is no state flip and no "Back to sleep" to tap.
-async function noteNightWake() {
-  const running = openSleep();
-  if (!running || isPaused(running)) return;
-  const t = now().toISOString();
-  const p = sleepPauses(running);
-  await sb.from("events").update({ note: JSON.stringify({ pauses: [...p.done, [t, t]] }) }).eq("id", running.id);
-  await loadEvents();
-}
+// ---- "He woke up" at night is pauseSleep(): a REAL awake state, because the
+// stretch timer has to go back to zero and only an open pause can do that. The
+// zero-length marker written between 13 and 14 Sep counted the wake-up without
+// flipping any state, which is exactly why no clock could reset. Those rows still
+// read right — sleepSegments() skips zero-length cuts and nightSleepStats() still
+// counts them as wake-ups — nothing new writes them.
 
 // ---- Remove ONE wake-up. The night's count is the number Emma reads in the
 // morning, so a mis-tap at 3am has to be fixable on its own — deleting the whole
@@ -1603,19 +1596,28 @@ function renderLog(listId) {
     // own bin. Without this the log says "3 wake-ups" and a mis-tap at 3am can
     // only be undone by deleting the whole night.
     if (e.type === "sleep") {
-      sleepPauses(e).done
+      const pz = sleepPauses(e);
+      pz.done
         .map(([a, b], i) => ({ a, b, i }))
         .sort((x, y) => new Date(x.a) - new Date(y.a))
         .forEach(({ a, b, i }) => list.appendChild(wakeSubRow(e, a, b, i)));
+      // He is awake right now: the wake-up is real and belongs in the log, but it
+      // has no end yet, so there is nothing to delete — the way out is "He is
+      // asleep" on the home card.
+      if (pz.open) list.appendChild(wakeSubRow(e, pz.open, null, -1));
     }
   }
 }
 
-// One wake-up inside a sleep row. A zero-length pause is a "He woke up" tap and
-// has only a time; a real pause also has an end and a length.
+// One wake-up inside a sleep row. `b === null` means he is awake right now. An old
+// zero-length marker has only a time; a real wake-up has an end, a length, and the
+// stretch it interrupted.
 function wakeSubRow(e, a, b, idx) {
-  const t0 = new Date(a), t1 = new Date(b);
-  const span = t1 - t0;
+  const t0 = new Date(a), t1 = b ? new Date(b) : null;
+  const span = t1 ? t1 - t0 : 0;
+  // How long the stretch that ENDED at this wake-up ran. sleepSegments() is the one
+  // place a stretch is ever cut, so this line can't disagree with the big number.
+  const before = t1 && sleepSegments(e, now().getTime()).find(([, en]) => en === t0.getTime());
   const li = document.createElement("li");
   li.className = "log-item log-sub";
   li.innerHTML = `<span class="log-emoji">⤷</span><div class="log-body"><div class="log-sub-text"></div></div>`;
@@ -1624,7 +1626,11 @@ function wakeSubRow(e, a, b, idx) {
   const when = document.createElement("b");
   when.textContent = span > 0 ? `${clockTime(t0)} – ${clockTime(t1)}` : clockTime(t0);
   body.append(when);
-  if (span > 0) body.append(` · ${dur(span)}`);
+  if (!t1) body.append(" · awake now");
+  else if (span > 0) body.append(` · ${dur(span)} awake`);
+  if (before) body.append(` · slept ${plDur(Math.round((before[1] - before[0]) / 60000))} before`);
+  // Nothing to delete while it is still running.
+  if (!t1) return li;
 
   // Same inline two-step confirm the row above uses — never browser confirm().
   const del = document.createElement("button");
@@ -2811,6 +2817,20 @@ async function sendChat(e) {
 
 const pctOfDay = (min) => Math.max(0, Math.min(100, (min / 1440) * 100));
 
+// ---- The night card's answer, in words. The gate is cfgNow().night.feedGateMin
+// — 3h at Leo's band today, 4h at the later ones — read here and nowhere else, so
+// the card starts saying 4h on its own the day he ages into it. "FEED OK" never
+// means wake him: it is a minimum gate, not a schedule, same as the Training tab,
+// which keeps its own "gate" wording. Plain words here because at 3am "gate is
+// OPEN" reads as jargon.
+const feedVerdict = (stretchMin, cfg) =>
+  stretchMin >= (cfg || cfgNow()).night.feedGateMin
+    ? { open: true,  word: "FEED OK" }
+    : { open: false, word: "NO FEED YET" };
+const verdictHTML = (v, inline) =>
+  `<span class="wake-verdict${inline ? " inline" : ""} ${v.open ? "open" : "shut"}">${v.word}</span>`;
+const VERDICT_NOTE = `<span class="wake-verdict-note">only if he wakes — never wake him</span>`;
+
 // ---- The headline. ONE rule holds it together:
 //   HERO = the clock that is running right now.
 //   PAIR = accumulated context, which only moves when a sleep ends.
@@ -2875,20 +2895,23 @@ function renderLeoWake() {
     const nss = nightSleepStats(null, cfg);
     const night = ns.isNight;
     track.classList.add("hidden");
-    set(`${night ? "Night waking" : "Nap paused"} · ${clockTime(since)}`,
+    // While he is awake the stretch that just ended is the number that matters —
+    // how long it ran, and whether that was long enough to feed. The total below it
+    // holds: awake minutes are not sleep, so it never moves and never goes back.
+    set(night ? `Awake since ${clockTime(since)}` : `Nap paused · ${clockTime(since)}`,
         heroTime(now() - since),
         night
-          ? `He slept <b>${plDur(nss.lastStretchMin)}</b> before this.`
+          ? `Slept <b>${plDur(nss.lastStretchMin)}</b> before this wake-up · ${verdictHTML(feedVerdict(nss.lastStretchMin, cfg), true)}`
           : "Awake — still the same nap.",
         night
           ? `Still the same night. Keep it dark and quiet — morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))}, ${plDur(ns.minsToMorning)} away.`
           : `Tap "Back to sleep" when he's down again. This won't count as a new nap.`,
         night ? "night" : "amber");
     if (night) {
-      // Two SLEEP numbers, because that's the question at 3am: how long was that
-      // stretch, and how much has he had in total.
-      pair(plDur(nss.lastStretchMin), "that stretch",
-           plDur(nss.asleepMin), "asleep in total tonight");
+      // The same pair as the asleep card, so the only thing that changes between
+      // the two states is the big number — not the furniture under it.
+      pair(plDur(nss.asleepMin), "asleep in total tonight",
+           clockTime(ns.nightStart), "went down at");
     } else {
       pair(plDur(st.napMins), "day sleep today",
            `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
@@ -2906,8 +2929,10 @@ function renderLeoWake() {
       const since = nss.currentStart || new Date(w.asleep.start_at);
       set(`Asleep since ${clockTime(since)}`,
           heroTime(now() - since),
-          nss.wakes ? `Back down after ${nss.wakes} wake-up${nss.wakes === 1 ? "" : "s"}.` : "Asleep for the night.",
-          `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
+          // The word, then the one line that stops it being read as an instruction.
+          verdictHTML(feedVerdict(nss.lastStretchMin, cfg)) + VERDICT_NOTE,
+          (nss.wakes ? `Back down after ${nss.wakes} wake-up${nss.wakes === 1 ? "" : "s"}. ` : "Asleep for the night. ")
+            + `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
           "night");
       pair(plDur(nss.asleepMin), "asleep in total tonight",
            clockTime(ns.nightStart), "went down at");
@@ -3142,12 +3167,12 @@ function renderSleepActions(w, cfg) {
   // open sleep row reads "He's awake" at 5:55am and "End sleep" at 6:05, and without
   // it in the key the memo would keep the stale label across the boundary.
   const paused = isPaused(w.asleep);
-  // Self-clearing: the question only exists in the night + asleep + not-paused
-  // branch, so leaving that branch answers it "not yet" without saving anything.
-  const confirming = _upForDayConfirm && ns.isNight && !!w.asleep && !paused;
+  // Self-clearing: the question only exists in the two night branches (asleep, and
+  // awake mid-night), so leaving them answers it "not yet" without saving anything.
+  const confirming = _upForDayConfirm && ns.isNight && !!w.asleep;
   _upForDayConfirm = confirming;
   const sig = `${ns.isNight}:${ns.logged}:${confirming}:` + (
-    w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}:${ns.minsToMorning <= 60}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
+    w.asleep ? `end:${w.asleep.id}:${paused}:${isNightRow(w.asleep)}` : bed ? `settling:${bed.id}` : `start:${bedtimeNear}`);
   if (sig === _sleepActionsSig) return;
   _sleepActionsSig = sig;
   host.innerHTML = "";
@@ -3164,44 +3189,52 @@ function renderSleepActions(w, cfg) {
   // gets tapped twice.
   const again = () => renderSleepActions(wakeState(null, cfg), cfg);
 
+  // The night, either way round: one big button for the state he is in, with the
+  // quiet morning exit under it. Same shape asleep and awake, so a half-asleep
+  // thumb doesn't have to re-learn the screen at 3am.
+  const nightStack = (bigText, bigFn) => {
+    const stack = document.createElement("div");
+    stack.className = "sleep-stack";
+    host.appendChild(stack);
+    if (!confirming) {
+      mk("btn-sleep btn-block active", bigText, bigFn, stack);
+      mk("btn-ghost btn-block", "☀️ He's up for the day", () => { _upForDayConfirm = true; again(); }, stack);
+      return;
+    }
+    // Ending the night is the only action here you can't take back from this
+    // screen, so it asks — once, and never on the 3am button.
+    const q = document.createElement("p");
+    q.className = "sleep-confirm-q";
+    q.textContent = `Up for the day? This ends the night at ${clockTime(now())}.`;
+    stack.appendChild(q);
+    const pairEl = document.createElement("div");
+    pairEl.className = "sleep-confirm";
+    stack.appendChild(pairEl);
+    mk("btn-confirm-yes", "✓ Yes, he's up", () => { _upForDayConfirm = false; endSleep(); }, pairEl);
+    mk("btn-ghost", "✕ Not yet", () => { _upForDayConfirm = false; again(); }, pairEl);
+  };
+
   if (bed && !w.asleep) {
     mk("btn-sleep", "😴 He's asleep", () => finishBedtimeSession());
     mk("btn-ghost", "+ Round", () => addBedtimeRound(1));
+  } else if (w.asleep && paused && ns.isNight) {
+    // Awake in the night. Closing the pause is the common case and restarts the
+    // stretch from zero; the morning exit sits under it and still asks first — it
+    // no longer waits for the last hour of the night, because from here it is the
+    // only way out and endSleep() closes the open pause on its way.
+    nightStack("😴 He is asleep", () => resumeSleep());
   } else if (w.asleep && paused) {
-    // Same sleep, still open. Resume is the big one — going back down is the
-    // common case; ending is what you do once he's actually up.
+    // Day nap, stirred. Same sleep, still open. Resume is the big one — going back
+    // down is the common case; ending is what you do once he's actually up.
     mk("btn-sleep btn-block btn-night", "▶ Back to sleep", () => resumeSleep());
-    // At 3:04am "Up for the day" is not a real option — it's just something to
-    // mis-tap. It only appears within an hour of morning.
-    if (!ns.isNight) mk("btn-ghost btn-block", "End nap", () => endSleep());
-    else if (ns.minsToMorning <= 60) mk("btn-ghost btn-block", "Up for the day", () => endSleep());
+    mk("btn-ghost btn-block", "End nap", () => endSleep());
   } else if (ns.isNight) {
     // The word "nap" must never appear between bedtime and morning. At 1am the only
     // thing a parent needs is one big button, and it must write subtype "night".
     if (w.asleep) {
-      // Counting, not pausing: the clock and the asleep total must run through the
-      // tap, because "how long has he been asleep" is the only 3am question.
-      // Under it, the morning exit — the one tap that ends the night. Stacked, so
-      // the big green one is still what a half-asleep thumb finds in the dark.
-      const stack = document.createElement("div");
-      stack.className = "sleep-stack";
-      host.appendChild(stack);
-      if (!confirming) {
-        mk("btn-sleep btn-block active", "🌙 He woke up", () => noteNightWake(), stack);
-        mk("btn-ghost btn-block", "☀️ He's up for the day", () => { _upForDayConfirm = true; again(); }, stack);
-      } else {
-        // Ending the night is the only action here you can't take back from this
-        // screen, so it asks — once, and never on the 3am button.
-        const q = document.createElement("p");
-        q.className = "sleep-confirm-q";
-        q.textContent = `Up for the day? This ends the night at ${clockTime(now())}.`;
-        stack.appendChild(q);
-        const pairEl = document.createElement("div");
-        pairEl.className = "sleep-confirm";
-        stack.appendChild(pairEl);
-        mk("btn-confirm-yes", "✓ Yes, he's up", () => { _upForDayConfirm = false; endSleep(); }, pairEl);
-        mk("btn-ghost", "✕ Not yet", () => { _upForDayConfirm = false; again(); }, pairEl);
-      }
+      // A real pause: he IS awake, and the stretch timer has to go to zero. The
+      // night, the row and the total all carry on — only the stretch restarts.
+      nightStack("🌙 He woke up", () => pauseSleep());
     } else if (ns.logged) {
       mk("btn-sleep btn-block btn-night", "😴 Back to sleep", () => startSleep("night"));
     } else {

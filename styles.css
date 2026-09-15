@@ -101,6 +101,16 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 /* Every number on this screen gets one plain sentence saying what to do about it. */
 .wake-why { margin: 6px 0 0; font-size: var(--t-note); line-height: 1.5; opacity: .72; }
 
+/* The night card's verdict, in plain words under the stretch. Dim when the gate is
+   shut, sage when it is open — no glow, no pulse: this is read in a dark room. */
+.wake-verdict { display: block; font-family: "Fraunces", serif; font-size: 22px; font-weight: 600;
+  letter-spacing: .04em; line-height: 1.15; margin-top: 2px; }
+/* nowrap: at 375px "FEED OK" broke across two lines mid-verdict. */
+.wake-verdict.inline { display: inline; font-family: inherit; font-size: inherit; font-weight: 600; margin: 0; white-space: nowrap; }
+.wake-verdict.open { color: var(--sage); }
+.wake-verdict.shut { color: inherit; opacity: .6; }
+.wake-verdict-note { display: block; margin-top: 5px; font-size: var(--t-note); line-height: 1.4; opacity: .62; }
+
 /* The pair: accumulated context under the live number. Only moves when a sleep
    ends, so it never competes with the hero for attention. */
 .wake-pair {

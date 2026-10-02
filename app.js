@@ -3318,16 +3318,28 @@ function averageMorningWake(cfg, t) {
   return d;
 }
 
-// Projected bedtime: last nap end + the longest window of the day, clamped into
-// the age-appropriate bedtime window. A projection, not a target — it moves with him.
+// The 7-night plan's crib time, in minutes of the day, from the last wake-up: a
+// wake window later, moved into the crib slot (COACH.cribSlotStart–bedtimeLatest),
+// never before bedtimeEarliest; a short-nap day goes earlier, floor still holds.
+// This is coachDay()'s bed rule. The Coach only reads today's live log, so the
+// screens outside it (Planner, Training, Patterns, home) ask this instead —
+// keep the two identical.
+function planCribMin(sMin, short, cfg) {
+  const c = cfg || cfgNow();
+  const floor = hhmmToMin(c.night.bedtimeEarliest);
+  const slotA = hhmmToMin(COACH.cribSlotStart), slotB = hhmmToMin(c.night.bedtimeLatest);
+  const plus = sMin + c.ww.target, plusMax = sMin + c.ww.lastOfDay;
+  return short ? Math.max(plus, floor) : Math.max(Math.min(Math.max(plus, slotA), slotB, plusMax), floor);
+}
+
+// Tonight's crib time: the plan's rule from his last wake-up. A projection, not a
+// target — it moves with him, and it is the same time the Coach shows.
 function projectTonight(cfg, st, t) {
   const T = t || now();
   const anchor = st.lastNapEnd || (wakeState(null, cfg, T).wokeAt);
   if (!anchor) return null;
-  let bed = new Date(anchor.getTime() + cfg.ww.lastOfDay * 60000);
-  const lo = atToday(cfg.night.bedtimeEarliest, T), hi = atToday(cfg.night.bedtimeLatest, T);
-  if (bed < lo) bed = lo;
-  if (bed > hi) bed = hi;
+  const short = st.naps.filter((b) => !b.running && b.fullMins < cfg.naps.minUsefulNap).length >= 2;
+  const bed = new Date(T.getFullYear(), T.getMonth(), T.getDate(), 0, planCribMin(minOfDay(anchor), short, cfg));
   const wake = averageMorningWake(cfg, T);
   return { bed, wake, mins: Math.round((wake - bed) / 60000) };
 }
@@ -3361,7 +3373,7 @@ function renderLeoData() {
     `</div>` +
     (proj
       ? `<div class="leo-proj"><span class="leo-proj-lab">Tonight, projected</span>` +
-        `<span class="leo-proj-val">asleep ~<b>${clockTime(proj.bed)}</b> → ~<b>${clockTime(proj.wake)}</b> ≈ ${plDur(proj.mins)}</span></div>`
+        `<span class="leo-proj-val">crib ~<b>${clockTime(proj.bed)}</b> → ~<b>${clockTime(proj.wake)}</b> ≈ ${plDur(proj.mins)}</span></div>`
       : "");
 
   const cap = $("leo-gauge-cap");

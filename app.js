@@ -250,6 +250,8 @@ function cfgNow() {
   if (_cfgCache.key !== key) _cfgCache = { key, value: resolveConfig(month, SETTINGS.overrides) };
   return _cfgCache.value;
 }
+// "2–3" naps, or just "2" when the plan pins both ends — never "2 of 2–2".
+const napRange = (c, max = c.naps.maxCount) => c.naps.minCount === max ? `${max}` : `${c.naps.minCount}–${max}`;
 
 // ============================================================
 //  0c. DERIVATIONS — two functions, read everywhere
@@ -1174,17 +1176,23 @@ function evaluateAlerts(evts, cfg, t) {
   const bedLo = hhmmToMin(c.night.bedtimeEarliest), bedHi = hhmmToMin(c.night.bedtimeLatest);
   // ns.logged already means "he's gone down for this night" — the old sameDay()
   // test couldn't see a night that started before midnight.
-  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !ns.logged) out.push({
-    id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
-    title: `Bedtime window open`,
-    body: `Crib between ${clockTime(w.opensAt)} and ${clockTime(w.closesAt)}. Start the routine now — calm and a bit later beats fast and too early.`,
-  });
+  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !ns.logged) {
+    // The crib time is the plan's (projectTonight → planCribMin), the same one the Coach shows.
+    const pj = projectTonight(c, st, T);
+    out.push({
+      id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
+      title: `Bedtime window open`,
+      body: pj
+        ? `Routine from ${clockTime(new Date(pj.bed.getTime() - COACH.routineMin * 60000))}: feed → pajamas → massage → white noise → crib awake at ${clockTime(pj.bed)}.`
+        : `Routine: feed → pajamas → massage → white noise → crib awake.`,
+    });
+  }
 
   // 🔵 One nap too many.
   if (st.napCount > c.naps.maxCount) out.push({
     id: "extra-nap", sev: "info", key: `napover:${dk}:${st.napCount}`, push: false,
     title: `That's nap #${st.napCount}`,
-    body: `At ${c.band}, ${c.naps.minCount}–${c.naps.maxCount} naps is the target. Consider holding him to bedtime instead.`,
+    body: `The plan is ${c.naps.maxCount} naps — never a third. Next time: keep him busy and outside, and bring bedtime earlier (never before ${clockTime(atToday(c.night.bedtimeEarliest))}).`,
   });
 
   // 🔵 Fragmented day — the pattern behind "he fights bedtime every night".
@@ -1195,18 +1203,15 @@ function evaluateAlerts(evts, cfg, t) {
     body: `Naps under ${c.naps.minUsefulNap} min drain sleep pressure without restoring much. Bedtime comes earlier tonight, never before ${clockTime(atToday(c.night.bedtimeEarliest))}. Never a third nap.`,
   });
 
-  // 🔵 Night feed spacing — INFORMATION, not a gate. Whether Leo needs a night feed
-  // is a weight-and-pediatrician question; this app doesn't get a vote on it.
+  // 🔵 The feed gate, on the Coach's own clock: the last FULL feed (left + right
+  // merged), so a 4-minute snack doesn't restart it (Mike's call, 2 Oct). Reads the
+  // live log through coachGate(); no full feed since tonight's routine → no card.
   if (ns.isNight) {
-    const lastNight = list
-      .filter((e) => e.type === "breast" || e.type === "bottle")
-      .map((e) => new Date(e.end_at || e.start_at))
-      .filter((d) => d <= T && (T - d) <= 12 * 3600000 && isNightFeedTime(d, c))
-      .sort((a, b) => b - a)[0];
-    if (lastNight) out.push({
-      id: "feed-gate", sev: "info", key: `feedgate:${lastNight.getTime()}`, push: false,
-      title: `Last night feed ${clockTime(lastNight)} · ${plDur(Math.round((T - lastNight) / 60000))} ago`,
-      body: `Typical spacing at ${c.band} is around ${plDur(c.night.feedGateMin)}. For reference only — feeding is a weight-and-doctor decision, not a clock decision.`,
+    const g = coachGate(T);
+    if (g.known) out.push({
+      id: "feed-gate", sev: "info", key: `feedgate:${g.last.getTime()}`, push: false,
+      title: `Last full feed ${clockTime(g.last)} · ${plDur(Math.round(g.sinceMin))} ago`,
+      body: `Feed gate: ${plDur(c.night.feedGateMin)} since his last full feed. Under it → Mike and the steps. Over it → Emma feeds, sitting up. Never wake him to feed.`,
     });
   }
 
@@ -1778,18 +1783,25 @@ const plIcon = (k) => ({wake:"☀️",feed:"🍼",nap:"💤",bed:"🌙"}[k]||"�
 // Age in whole weeks off the app's BIRTH constant.
 function ageWeeks() { return Math.max(0, Math.floor((now() - BIRTH) / 6048e5)); } // 7*864e5 ms/week
 
-function plGenerateDay(wakeMin, band, ww){
+// The plan's day, same rules as the Coach's coachDay(): a nap one wake window after
+// each wake-up (the short window only if the long one would miss the cutoff), every
+// nap over by the cutoff, the midday nap capped, crib by planCribMin(). No dream feed.
+function plGenerateDay(wakeMin, band){
+  const c=cfgNow(), cutoff=hhmmToMin(c.naps.lastNapCutoff), limit=cutoff-c.naps.minUsefulNap;
   const items=[]; const push=(t,kind,label,extra={})=>items.push({t,kind,label,...extra});
   push(wakeMin,"wake","Wake up"); push(wakeMin,"feed","Feed");
-  let cur=wakeMin, used=0;
+  let cur=wakeMin, used=0, napTotal=0;
   for(let i=0;i<band.naps;i++){
-    const down=cur+ww; if(i>0 && down>17*60) break;
-    push(down,"nap",`Nap ${i+1}`,{len:band.napLen});
-    const up=down+band.napLen; push(up,"wake",`Up from nap ${i+1}`); push(up+5,"feed","Feed");
-    cur=up; used++;
+    let down=cur+c.ww.target; if(down>limit) down=cur+c.ww.min;
+    if(down>limit) break;
+    let len=Math.min(band.napLen, cutoff-down, c.naps.totalDayMax-napTotal);
+    if(i>0) len=Math.min(len, COACH.middayCapMin);
+    push(down,"nap",`Nap ${i+1}`,{len});
+    const up=down+len; push(up,"wake",`Up from nap ${i+1}`); push(up+5,"feed","Feed");
+    cur=up; used++; napTotal+=len;
   }
-  const bed=cur+band.wwLast;
-  push(bed-20,"feed","Bedtime feed"); push(bed,"bed","Bed"); push(bed+210,"feed","Dream feed (optional)");
+  const bed=planCribMin(cur,false,c);
+  push(bed-COACH.routineMin,"feed","Routine: feed first"); push(bed,"bed","Crib");
   items.sort((a,b)=>a.t-b.t);
   return {items,bed,naps:used};
 }
@@ -1816,7 +1828,7 @@ function plAnalyzeEvent(day, band, evtMin, type, realLastFeedMin){
     after.push("Reset to local morning light fast; it re-anchors his clock within a few days.");
   } else {
     before.push(`Feed before you leave (last feed was ${realLastFeedMin!=null?plFmt(realLastFeedMin):"—"}).`);
-    if(statusClass==="warn") before.push("He'll be over his window — plan a motion nap (stroller/carrier) or shift the outing 30–45 min earlier.");
+    if(statusClass==="warn") before.push("He'll be over his window — shift the outing 30–45 min earlier, or plan a rescue nap in the carrier or a car ride, with an awake adult watching.");
     during.push(nextNap?`Next nap due ~${plFmt(nextNap.t)}. If the event runs past it, do the nap on the move.`:"No nap due during this window — good window for an outing.");
     after.push(nextNap?`Get him down for a nap by ~${plFmt(nextNap.t)} (or soon after a motion nap).`:`Resume the rhythm; next feed ~${nextFeed?plFmt(nextFeed.t):"—"}.`);
     after.push("If a nap got skipped or cut short, move bedtime ~30 min earlier to avoid overtiredness.");
@@ -1832,7 +1844,6 @@ const plStore = {
 const planner = {
   view:    plStore.get("view","today"),
   wake:    "06:30",
-  ww:      plStore.get("ww",null),
   evtType: plStore.get("evtType","outing"),
   evtTime: plStore.get("evtTime","08:30"),
   evtName: plStore.get("evtName","Breakfast"),
@@ -1848,15 +1859,12 @@ function plCurrentBand(){
     label:  c.band,
     wwMin:  c.ww.min,
     wwMax:  c.ww.max,
-    wwLast: c.ww.lastOfDay,
     naps:   c.naps.maxCount,
     napLen: Math.round(c.naps.totalDayMax / c.naps.maxCount),
     feeds:  c.feeds.perDayMax,
     solids: c.month >= 6,
   };
 }
-function plEffectiveWw(){ const b=plCurrentBand(); const def=Math.round((b.wwMin+b.wwMax)/2); return planner.ww==null?def:Math.min(Math.max(planner.ww,b.wwMin),b.wwMax); }
-
 // Morning wake from real data: earliest sleep that ENDED today (prefer night sleep), else 06:30.
 function plDefaultWake(){
   const ended = events.filter(e=>e.type==="sleep"&&e.end_at&&isToday(e.end_at))
@@ -1873,26 +1881,23 @@ function plRenderAgebar(){
   $("pl-agebar").innerHTML =
     `<div><span class="pl-num">${ageMonths()}</span><span class="pl-lab">months</span></div>
      <div><span class="pl-num">${ageWeeks()}</span><span class="pl-lab">weeks</span></div>
-     <div class="pl-band">${b.label}<span>${b.naps} naps · ~${plDur(plEffectiveWw())} windows · ${b.solids?"+ solids":"milk only"}</span></div>`;
+     <div class="pl-band">${b.label}<span>${b.naps} naps · ${plDur(cfgNow().ww.target)} windows · ${b.solids?"+ solids":"milk only"}</span></div>`;
 }
 
 function buildPlToday(){
   if(!plWakeTouched) planner.wake = plDefaultWake();
-  const b=plCurrentBand(), ww=plEffectiveWw();
+  const c=cfgNow();
   return `<section>
     <div class="pl-controls">
       <label>Morning wake <input type="time" id="pl-wake" value="${planner.wake}"></label>
-      <label>Wake window: <b id="pl-wwval">${plDur(ww)}</b>
-        <input type="range" id="pl-ww" min="${b.wwMin}" max="${b.wwMax}" value="${ww}">
-        <span class="pl-hint">Auto-set from today's log · slide to adjust</span></label>
+      <span class="pl-hint">${plDur(c.ww.target)} awake, every time. ${plDur(c.ww.min)} only if he's still tired after 5 minutes of a new scene.</span>
     </div>
     <div id="pl-today-out"></div></section>`;
 }
 function renderPlTodayOut(){
-  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
-  const late = day.bed>20*60+30;
+  const b=plCurrentBand(), day=plGenerateDay(plToMin(planner.wake),b);
   $("pl-today-out").innerHTML =
-    `<div class="pl-summary">Predicted bedtime <b>${plFmt(day.bed)}</b> · ${day.naps} naps${late?' <em>— late; try an earlier wake or shorter windows.</em>':''}</div>
+    `<div class="pl-summary">Crib <b>${plFmt(day.bed)}</b> · routine from ${plFmt(day.bed-COACH.routineMin)} · ${day.naps} naps</div>
      <ul class="pl-timeline">${day.items.map(it=>`<li class="pl-k-${it.kind}"><span class="pl-tt">${plFmt(it.t)}</span><span class="pl-ic">${plIcon(it.kind)}</span><span class="pl-ll">${it.label}${it.len?` <em>· ${plDur(it.len)}</em>`:''}</span></li>`).join("")}</ul>`;
 }
 function buildPlEvent(){
@@ -1910,7 +1915,7 @@ function buildPlEvent(){
     <div id="pl-event-out"></div></section>`;
 }
 function renderPlEventOut(){
-  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
+  const b=plCurrentBand(), day=plGenerateDay(plToMin(planner.wake),b);
   const e=plAnalyzeEvent(day,b,plToMin(planner.evtTime),planner.evtType,plRealLastFeedMin());
   $("pl-event-out").innerHTML =
     `<div class="pl-status ${e.statusClass}"><b>${planner.evtName||"Event"} at ${plFmt(plToMin(planner.evtTime))}</b><br>${e.windowStatus}</div>
@@ -1933,7 +1938,6 @@ function renderPlanner(){
   if(planner.view==="today"){
     c.innerHTML=buildPlToday(); renderPlTodayOut();
     $("pl-wake").addEventListener("input",e=>{planner.wake=e.target.value;plWakeTouched=true;renderPlTodayOut();});
-    $("pl-ww").addEventListener("input",e=>{planner.ww=+e.target.value;plStore.set("ww",planner.ww);$("pl-wwval").textContent=plDur(planner.ww);renderPlTodayOut();});
   } else if(planner.view==="event"){
     c.innerHTML=buildPlEvent(); renderPlEventOut();
     $("pl-evtName").addEventListener("input",e=>{planner.evtName=e.target.value;plStore.set("evtName",planner.evtName);renderPlEventOut();});
@@ -1973,7 +1977,7 @@ function sleepBannerHTML(){
     <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — in the 4–6 month window where gentle sleep-shaping is appropriate. Start <b>Phase 1</b> below now: same bedtime and wake time, morning light, a short routine, and laying him down drowsy but awake. <b>Keep all his feeds.</b> The more active step (<b>Phase 2 — bedtime fading</b>) has its strongest research support from about 6 months — <b>~${wksToSix} ${wksToSix === 1 ? "week" : "weeks"} away</b> for Leo, so treat it as <em>coming soon</em>, not <em>now</em>.</p></div>`;
   return `<div class="sl-banner green">
     <div class="sl-banner-eyebrow">🟢 Green light — the full plan fits Leo now</div>
-    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — past 6 months, where the research is strongest. Both phases below are well-supported. Use Phase 2 (bedtime fading) if he needs more help. Keep feeds unless Dr. León Magaña has guided otherwise.</p></div>`;
+    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — past 6 months, where the research is strongest. We're on the 7-night plan: the 🧭 Coach has tonight's steps. Keep his night feeds (1–2 is normal) unless Dr. León Magaña says otherwise.</p></div>`;
 }
 
 // Real-data progress: last 7 days from the tracker's `events`.
@@ -2191,14 +2195,11 @@ const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
 const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
 
 // When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
-// schedule — nobody wakes him to feed.
+// schedule — nobody wakes him to feed. It counts from the last FULL feed, on the
+// Coach's clock (left + right merged), so a snack doesn't restart it (Mike, 2 Oct).
 function feedGateAt(t) {
   const T = t || now();
-  const f = events
-    .filter((e) => (e.type === "breast" || e.type === "bottle"))
-    .map((e) => new Date(e.end_at || e.start_at))
-    .filter((d) => d <= T)
-    .sort((a, b) => b - a)[0];
+  const f = coachLastFullFeed(T);
   if (!f) return null;
   return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
 }
@@ -2242,14 +2243,14 @@ function trainTonightHTML() {
   }
 
   const target = proj
-    ? `<b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - 25 * 60000))}</b>`
+    ? `crib <b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - COACH.routineMin * 60000))}</b>`
     : "log a nap and this fills in";
 
   return session + `
   <div class="tr-plan">
     <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
     <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
-      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last feed ${clockTime(gate.last)})</span>` : "no feed logged yet"
+      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
     }</span></div>
     <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
   </div>
@@ -2257,8 +2258,8 @@ function trainTonightHTML() {
   <div class="tr-shift">
     <div class="tr-shift-h">Whose wake is it</div>
     <div class="tr-shift-grid">
-      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake under 3 hours. Ladder only — no boob, no exceptions on a healthy night.</span></div>
-      <div class="tr-shift-c emma"><b>Emma</b><span>Only real feeds, 3+ hours after the last one. Otherwise earplugs — the rest is his.</span></div>
+      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake with the feed gate closed — all night, including after 2 AM. The steps only, no boob, on a healthy night.</span></div>
+      <div class="tr-shift-c emma"><b>Emma</b><span>Only feeds with the gate open — ${plDur(cfg.night.feedGateMin)}+ since his last full feed. Before 2 AM she's asleep in the other room; Mike wakes her.</span></div>
     </div>
     <p class="tr-shift-n">He can smell the milk on Emma, so he escalates harder at her for a wake that isn't hunger. Agree the two windows out loud <b>before 7pm</b>. Never renegotiate at 2am in the hallway — review over coffee at 8.</p>
   </div>
@@ -2271,7 +2272,7 @@ function trainTonightHTML() {
     <p class="tr-cue-t"><b>The test:</b> if his eyes crack open when he touches the mattress, you didn't fail — you got it exactly right. <b>Too late</b> = eyes closed 30+ seconds, breathing deep and even. Then the crib gets a sleeping baby, he surfaces, and the panic is the mismatch.</p>
   </div>
 
-  <div class="sl-gate"><b>The one line:</b> bouncing to <b>calm</b> is always allowed — that's rung 3. Bouncing all the way to <b>sleep</b> is the prop. The bounce is the fire extinguisher, not the bed.</div>`;
+  <div class="sl-gate"><b>The one line:</b> still arms to calm him — no bouncing, no walking, no ball. Calm, not asleep. Then back in the crib, awake.</div>`;
 }
 
 // ---------- Sub-tab: LADDER ----------
@@ -2279,14 +2280,14 @@ const TRAIN_LADDER = `
   <div class="tr-triage">
     <div class="tr-triage-h">First, listen. The sound picks the rung.</div>
     <div class="tr-tr-row calm"><span class="tr-tr-s">Active, babbling, squirming</span><span class="tr-tr-a">Do nothing. Stay out of sight.</span></div>
-    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 1–2 minutes. Hands off.</span></div>
+    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 2 minutes. Out of sight.</span></div>
     <div class="tr-tr-row cry"><span class="tr-tr-s">Real crying, climbing</span><span class="tr-tr-a">Start at rung 2.</span></div>
     <div class="tr-tr-row scream"><span class="tr-tr-s">Hard screaming, panic</span><span class="tr-tr-a">Go now. Straight to rung 3.</span></div>
   </div>
 
   <div class="tr-ladder">
-    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 1–2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
-    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power in week 1 and then suddenly works around nights 4–6. That's the signal the crib association has flipped.</em></div></div></div>
+    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power on nights 1–2 and then starts working around night 3. That's the signal the crib association has flipped.</em></div></div></div>
     <div class="tr-rung"><div class="tr-rn">3</div><div><div class="tr-rt">Pick up and calm — fully</div><div class="tr-rd">Held <b>still</b> against your chest, in the dark. Not bouncing, not walking laps. No time limit: fully calm means crying stopped, body loose and heavy, breathing slow. Usually 5–10 boring minutes.</div></div></div>
     <div class="tr-rung"><div class="tr-rn">4</div><div><div class="tr-rt">Back down awake</div><div class="tr-rd">Calm but <b>not asleep</b>. Chupón in, hand on chest a few seconds, then withdraw. He restarts the second he touches the mattress? Normal. Rung 2 first, not straight back to arms.</div></div></div>
     <div class="tr-rung last"><div class="tr-rn">5</div><div><div class="tr-rt">Repeat, identically</div><div class="tr-rd">The number of rounds isn't the score — <b>sameness</b> is. 5–8 rounds on a night-1 wake is normal. Every identical round teaches him the deal doesn't change.</div></div></div>
@@ -2294,20 +2295,20 @@ const TRAIN_LADDER = `
 
   <div class="tr-override">
     <div class="tr-ov-h">⚠️ The override</div>
-    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, calm him completely. Holding, swaying, chupón, all fine.</p>
+    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, hold him still until he's calm. Chupón is fine. No bouncing, no walking.</p>
   </div>
 
   <div class="tr-notcio">
     <div class="tr-ov-h">This is not leaving him to cry</div>
     <p>He gets a response <b>every single time</b>, and arms every time he truly needs them. The only thing withheld on an under-3-hour wake is the boob — because that wake is habit, not hunger. Crying through a change with a parent right there leaves no trace; that's exactly what the 5-year follow-up measured.</p>
-    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. If a night is going to collapse, let it collapse completely into a comfort night and restart clean tomorrow.</p>
+    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. A comfort night is only for pain or illness — when he doesn't calm in anyone's arms. A long protest still gets the steps until he sleeps. Stopping the plan is decided in the morning, together — never at 2 AM.</p>
   </div>
 
   <div class="tr-dont">
     <div class="tr-ov-h">Never</div>
     <ul>
       <li><b>Never put a crying baby in the crib.</b> The crib is only ever for a calm baby. Calm first, then down.</li>
-      <li>Never bounce all the way to sleep.</li>
+      <li>No bouncing, no walking, no ball — still arms, on a healthy night.</li>
       <li>Never pick up automatically at every wake — the sound decides.</li>
       <li>Never sneak away. Same phrase every time: <em>"ya vengo, Leo."</em></li>
       <li>Never let the boob be the last step before the crib.</li>
@@ -2322,11 +2323,11 @@ function trainFeedsHTML() {
   const g = cfg.night.feedGateMin;
   return `
   <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
-    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No feed logged yet"}</div>
+    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
     ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
       ? `since ${clockTime(gate.opens)}`
       : `opens ${clockTime(gate.opens)}`}</div>
-    <p class="tr-gate-n">Last feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>
@@ -2349,10 +2350,9 @@ function trainFeedsHTML() {
     <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
     <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
     <ul>
-      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. At 6 months the day is interesting and he'll skip meals to look at things, then collect at night.</li>
+      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
       <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
       <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
-      <li>Optional: a dream feed around 10:30pm banks a full feed at a time <em>you</em> choose.</li>
     </ul>
     <p class="tr-signal">The signal it's working: a night feed shrinking to a 4-minute snack on its own. That one is becoming droppable. Expect 3–7 days.</p>
   </div>
@@ -2432,11 +2432,11 @@ function trainProgressHTML() {
 
   return `
   <div class="tr-gatebox ${unlocked ? "on" : ""}">
-    <div class="tr-gate-h">${unlocked ? "🎉 Phase 2 unlocked" : "Phase 2 gate"}</div>
+    <div class="tr-gate-h">Bedtime streak</div>
     <div class="tr-pips">${"●".repeat(Math.min(streak, GATE_NIGHTS))}${"○".repeat(Math.max(0, GATE_NIGHTS - streak))}</div>
     <p class="tr-gate-n">${unlocked
-      ? `Bedtime has been under ${GATE_MINS} minutes ${streak} nights running. The morning nap can move to the crib — see the Method tab.`
-      : `${streak} of ${GATE_NIGHTS} nights under ${GATE_MINS} minutes. Don't start naps yet — just keep counting.`}</p>
+      ? `🎉 ${streak} nights running under ${GATE_MINS} minutes — bedtime has clicked.`
+      : `${streak} of ${GATE_NIGHTS} nights asleep within ${GATE_MINS} minutes of the crib.`}</p>
   </div>
 
   ${bars}
@@ -2465,8 +2465,8 @@ function trainProgressHTML() {
 
   <div class="tr-judge">
     <div class="tr-ov-h">How to judge it</div>
-    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never evaluate before night 5.</p>
-    <p class="tr-notwin"><b>And success at 6 months is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most cycle wakes, eats when he's actually hungry. Seven-to-seven silence is a September conversation, after Dr. León clears night weaning.</p>
+    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never judge before the night-7 checkpoint; rule changes wait for the Sunday review.</p>
+    <p class="tr-notwin"><b>And success right now is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most wakes, eats when the gate is open. 1–2 night feeds are normal at his age — night-weaning is a separate decision, with Dr. León.</p>
   </div>`;
 }
 
@@ -2477,14 +2477,14 @@ function trainRescueHTML() {
   return `
   <div class="tr-vs">
     <div class="tr-vs-c"><b>Protest</b><span>Calms when you hold him. Settles within minutes in your arms. Restarts when he's put down.</span></div>
-    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 30+ minutes inconsolable in your arms. Arching, legs pulled up.</span></div>
+    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 20–30 minutes inconsolable in anyone's arms. Arching, legs pulled up.</span></div>
   </div>
   <p class="tr-vs-n">That's the whole test. <b>Protest calms when held; pain doesn't.</b> The training rules assume a comfortable baby — the moment he isn't one, the rules are suspended and you just comfort your son. Bounce, boob, chest, whatever works.</p>
 
   <div class="tr-check">
     <div class="tr-ov-h">The 10-minute checklist</div>
     <ol>
-      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time.</li>
+      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time. 38 °C or more: he's sick — rescue night, no steps.</li>
       <li><b>Big burp.</b> A full 3–4 minutes, not 30 seconds. Upright on your shoulder, belly against you, firm pats. Also seated on your forearm, leaning forward.</li>
       <li><b>Nose.</b> Blocked = he can't settle lying flat. Sterimar, wait a minute, suction only if it's clearly blocking.</li>
       <li><b>Gums.</b> Finger sweep for a hard ridge or bulge. Drool rash, red cheeks, ear-rubbing.</li>
@@ -2520,8 +2520,10 @@ function trainRescueHTML() {
 // ---------- Sub-tab: METHOD ----------
 function trainMethodHTML() {
   const cfg = cfgNow();
-  const unlocked = phase2Unlocked();
-  const streak = bedtimeStreak();
+  const st = sleepDayStats();
+  const proj = st.lastNapEnd ? projectTonight(cfg, st) : null;
+  // The day's rules are the Coach's own text, so this tab can't drift from it again.
+  const dayRules = coachRules().filter((s) => ["Days", "Crib naps", "Rescue nap"].includes(s.h));
   return sleepBannerHTML() + `
   <h2>The one idea behind all of it</h2>
   <div class="sl-card">
@@ -2538,55 +2540,28 @@ function trainMethodHTML() {
     <span class="sl-chip key">Crib, drowsy but awake</span>
   </div>
   <div class="sl-card">
-    <p>20–30 minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. The bath is optional and doesn't have to be in the chain at all; if he comes out of it wired, move it 1½ hours earlier or to the morning.</p>
+    <p>${COACH.routineMin} minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. No bath in the routine. Mike puts him down.</p>
     <p>The routine doesn't <em>make</em> him sleepy — it announces sleep to a brain that's already ready. Work backwards from his window: last nap ended ${
-      sleepDayStats().lastNapEnd ? `<b>${clockTime(sleepDayStats().lastNapEnd)}</b>, so lights-out lands around <b>${clockTime(new Date(sleepDayStats().lastNapEnd.getTime() + cfg.ww.lastOfDay * 60000))}</b>` : "— log a nap and this fills in"
+      proj ? `<b>${clockTime(st.lastNapEnd)}</b>, so crib lands at <b>${clockTime(proj.bed)}</b> — ${plDur(cfg.ww.target)} later, moved into the ${clockTime(atToday(COACH.cribSlotStart))}–${clockTime(atToday(cfg.night.bedtimeLatest))} slot, never before ${clockTime(atToday(cfg.night.bedtimeEarliest))}` : "— log a nap and this fills in"
     }. Start too early and you get a well-massaged, wide-awake baby doing four ladder rounds.</p>
   </div>
 
-  <h2>The three phases</h2>
-  <p class="sl-lead">Nights first. Naps convert in days once nights are solid — reverse the order and both fall apart.</p>
-  <div class="sl-phase${!unlocked ? " tr-here" : ""}">
-    <div class="sl-ph-head"><span>Phase 1 · Nights only</span><span class="sl-when">${!unlocked ? "◀ we are here" : "done"}</span></div>
-    <div class="sl-ph-body">
-      <ul>
-        <li><b>Change nothing about the day.</b> Bounce, white noise, stroller naps — all of it, guilt-free.</li>
-        <li>Protected daytime sleep is what <em>funds</em> the night project. An overtired baby cannot learn to settle at 7pm.</li>
-        <li>Bedtime: the routine above, into the crib drowsy but awake, ladder as needed.</li>
-      </ul>
-    </div>
-  </div>
-  <div class="sl-phase${unlocked ? " tr-here" : ""}">
-    <div class="sl-ph-head"><span>Phase 2 · Convert the morning nap only</span><span class="sl-when">${unlocked ? "◀ unlocked" : `${streak}/${GATE_NIGHTS} nights`}</span></div>
-    <div class="sl-ph-body">
-      <ul>
-        <li><b>Gate:</b> bedtime ≤${GATE_MINS} minutes for ${GATE_NIGHTS}–5 nights running.</li>
-        <li>Nap 1 only — it carries the highest sleep pressure of the day, so it has the best odds. Naps 2 and 3 stay on the stroller, possibly for months.</li>
-        <li>Timing: ~2½ hours after morning wake. Up at 7:00 → wind-down 9:20, crib 9:30.</li>
-        <li>Mini version of bedtime, 2–3 minutes: dark room, white noise, brief cuddle. Same signals, compressed.</li>
-        <li><b>The 30-minute rescue rule:</b> not asleep after ~30 minutes of calm trying → get him up, keep him happy 15–20 min, then rescue the nap on the stroller. No guilt, no second attempt that day.</li>
-      </ul>
-      <p class="sl-note"><em>That rescue rule is what makes it safe to try. At bedtime, sleep pressure guarantees he'll eventually sleep. At nap time there's no guarantee — and a missed morning nap wrecks the whole day and that night. The nap experiment is never allowed to cost actual sleep. Expect the first crib naps to be short, 30–40 min. Length comes after settling does.</em></p>
-      <p class="sl-note"><b>Free head start:</b> run nap 1 in the bedroom now — dark, white noise, then bounce as usual. You're pre-loading the location so that when you convert, only one variable changes.</p>
-    </div>
-  </div>
-  <div class="sl-phase">
-    <div class="sl-ph-head"><span>Phase 3 · Nap 2, then done</span><span class="sl-when">later</span></div>
-    <div class="sl-ph-body"><ul><li>The last cat-nap of the day can live on the stroller basically forever — it dies on its own when he drops to two naps.</li></ul></div>
-  </div>
+  <h2>Days, on the 7-night plan</h2>
+  ${dayRules.map((s) => `<div class="sl-phase">
+    <div class="sl-ph-head"><span>${s.h}</span></div>
+    <div class="sl-ph-body"><ul>${s.items.map((x) => `<li>${x}</li>`).join("")}</ul></div>
+  </div>`).join("")}
 
   <h2>Mornings</h2>
   <div class="tr-two">
     <div class="tr-two-c no"><b>Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — still night</b><span>Room dark, voices off, night rules, feed gate applies. Even with a grumpy baby. If crying at 5:15 gets lights and morning, you've taught him the night ends at 5:15 — and he'll deliver that daily.</span></div>
     <div class="tr-two-c yes"><b>After ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — morning</b><span>Don't fight it. Leave, wait a beat, come back with the dramatic wake-up: lights on, curtains open, big voice, <em>"¡buenos días, Leo!"</em>, out of the dark room for the bottle. The contrast is doing real chronobiology.</span></div>
   </div>
-  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. If you want mornings at 6:30, bedtime moves later, 15 minutes every two nights — never adjusted on a bad night.</p>
+  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. Bedtime stays in the ${clockTime(atToday(COACH.cribSlotStart))}–${clockTime(atToday(cfg.night.bedtimeLatest))} slot. Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} is night: same steps. Moving bedtime is a Sunday-review decision, never a 5 AM one.</p>
 
   <h2>What the weeks look like</h2>
   <div class="tr-week">
-    <div class="tr-wk"><b>Nights 1–3</b><span>Worse or equal. This is the toll booth. Night 3 is often an extinction burst — he protests harder one last time to test whether the old system comes back.</span></div>
-    <div class="tr-wk"><b>Nights 4–7</b><span>Bedtime starts dropping toward 15 minutes. Rung 2 suddenly starts working. Some cycle-transition wakes simply stop happening.</span></div>
-    <div class="tr-wk"><b>Week 2–3</b><span>Bedtime consistently short, nap conversion unlocks.</span></div>
+    ${Object.entries(COACH_NIGHTS).map(([n, t]) => `<div class="tr-wk"><b>Night ${n}</b><span>${t}</span></div>`).join("")}
     <div class="tr-wk"><b>Week 3–4</b><span>The new normal: asleep ~7:15, two honest feeds, up ~6:15. Two feeds is completely fine at his age and weight.</span></div>
   </div>
 
@@ -2820,18 +2795,18 @@ async function sendChat(e) {
 
 const pctOfDay = (min) => Math.max(0, Math.min(100, (min / 1440) * 100));
 
-// ---- The night card's answer, in words. The gate is cfgNow().night.feedGateMin
-// — 3h at Leo's band today, 4h at the later ones — read here and nowhere else, so
-// the card starts saying 4h on its own the day he ages into it. "FEED OK" never
-// means wake him: it is a minimum gate, not a schedule, same as the Training tab,
-// which keeps its own "gate" wording. Plain words here because at 3am "gate is
-// OPEN" reads as jargon.
-const feedVerdict = (stretchMin, cfg) =>
-  stretchMin >= (cfg || cfgNow()).night.feedGateMin
-    ? { open: true,  word: "FEED OK" }
-    : { open: false, word: "NO FEED YET" };
+// ---- The night card's answer, in words. It is the Coach's feed gate — coachGate():
+// cfgNow().night.feedGateMin since his last FULL feed — so the card and the Coach
+// can't give two answers at 3am (Mike's call, 2 Oct; until then it followed the
+// sleep stretch). "FEED OK" never means wake him: it is a minimum gate, not a
+// schedule. Plain words here because at 3am "gate is OPEN" reads as jargon. No full
+// feed logged since tonight's routine → the Coach asks, and the card says so.
+const feedVerdict = (g) =>
+  !g.known ? { unknown: true, word: "NO FULL FEED LOGGED" }
+  : g.open ? { open: true,  word: "FEED OK" }
+  : { open: false, word: "NO FEED YET" };
 const verdictHTML = (v, inline) =>
-  `<span class="wake-verdict${inline ? " inline" : ""} ${v.open ? "open" : "shut"}">${v.word}</span>`;
+  `<span class="wake-verdict${inline ? " inline" : ""}${v.unknown ? "" : v.open ? " open" : " shut"}">${v.word}</span>`;
 const VERDICT_NOTE = `<span class="wake-verdict-note">only if he wakes — never wake him</span>`;
 
 // ---- The headline. ONE rule holds it together:
@@ -2883,7 +2858,7 @@ function renderLeoWake() {
         heroTime(now() - new Date(bed.start_at)),
         mins <= GATE_MINS ? `Under ${GATE_MINS} minutes so far` : `Calm first, then down awake.`,
         mins <= GATE_MINS
-          ? `Nights under ${GATE_MINS} minutes are what unlock nap training.`
+          ? `Nights under ${GATE_MINS} minutes are the sign bedtime has clicked.`
           : `The number of rounds matters more than the clock. Keep them identical.`,
         ns.isNight ? "night" : mins <= GATE_MINS ? "green" : "amber");
     pair(null);
@@ -2899,12 +2874,12 @@ function renderLeoWake() {
     const night = ns.isNight;
     track.classList.add("hidden");
     // While he is awake the stretch that just ended is the number that matters —
-    // how long it ran, and whether that was long enough to feed. The total below it
+    // how long it ran — with the Coach's feed gate beside it. The total below it
     // holds: awake minutes are not sleep, so it never moves and never goes back.
     set(night ? `Awake since ${clockTime(since)}` : `Nap paused · ${clockTime(since)}`,
         heroTime(now() - since),
         night
-          ? `Slept <b>${plDur(nss.lastStretchMin)}</b> before this wake-up · ${verdictHTML(feedVerdict(nss.lastStretchMin, cfg), true)}`
+          ? `Slept <b>${plDur(nss.lastStretchMin)}</b> before this wake-up · ${verdictHTML(feedVerdict(coachGate()), true)}`
           : "Awake — still the same nap.",
         night
           ? `Still the same night. Keep it dark and quiet — morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))}, ${plDur(ns.minsToMorning)} away.`
@@ -2917,7 +2892,7 @@ function renderLeoWake() {
            clockTime(ns.nightStart), "went down at");
     } else {
       pair(plDur(st.napMins), "day sleep today",
-           `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+           `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     }
     return;
   }
@@ -2933,7 +2908,7 @@ function renderLeoWake() {
       set(`Asleep since ${clockTime(since)}`,
           heroTime(now() - since),
           // The word, then the one line that stops it being read as an instruction.
-          verdictHTML(feedVerdict(nss.lastStretchMin, cfg)) + VERDICT_NOTE,
+          verdictHTML(feedVerdict(coachGate())) + VERDICT_NOTE,
           (nss.wakes ? `Back down after ${nss.wakes} wake-up${nss.wakes === 1 ? "" : "s"}. ` : "Asleep for the night. ")
             + `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
           "night");
@@ -2952,14 +2927,17 @@ function renderLeoWake() {
            plFmt(hhmmToMin(cfg.night.morningWakeEarliest)), `the day starts, ${plDur(ns.minsToMorning)} away`);
       return;
     }
-    // In the bedtime window, not down yet.
-    set("Bedtime window · open",
+    // In the bedtime window, not down yet. The crib time is the plan's, as the Coach shows it.
+    const pj = projectTonight(cfg, st);
+    set("Bedtime",
         w.wokeAt ? heroTime(now() - w.wokeAt) : "—",
-        `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
-        "Calm and a bit later beats fast and too early.",
+        pj
+          ? `Crib at <b>${clockTime(pj.bed)}</b> — routine from <b>${clockTime(new Date(pj.bed.getTime() - COACH.routineMin * 60000))}</b>.`
+          : `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
+        `Short-nap day: earlier is right, never before ${clockTime(atToday(cfg.night.bedtimeEarliest))}.`,
         "night");
     pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     return;
   }
 
@@ -2972,7 +2950,7 @@ function renderLeoWake() {
         "A nap after that steals the tiredness he needs for bedtime.",
         "green");
     pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     track.classList.add("hidden");
     return;
   }
@@ -3129,8 +3107,8 @@ function renderNaps() {
   // The card header belongs to renderRing() now — it shows the 24h total, not
   // just naps. Setting it here as well just clobbered it.
   $("leo-naps-why").textContent = st.napCount > cap
-    ? `That's more than usual — ${cfg.naps.minCount}–${cap} naps a day is the target at ${cfg.band}.`
-    : `He usually has ${cfg.naps.minCount}–${cap} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
+    ? `That's more than usual — ${napRange(cfg, cap)} naps a day is the target at ${cfg.band}.`
+    : `He usually has ${napRange(cfg, cap)} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
 
   const ord = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
   $("leo-naps-list").innerHTML = st.naps.length
@@ -3318,16 +3296,28 @@ function averageMorningWake(cfg, t) {
   return d;
 }
 
-// Projected bedtime: last nap end + the longest window of the day, clamped into
-// the age-appropriate bedtime window. A projection, not a target — it moves with him.
+// The 7-night plan's crib time, in minutes of the day, from the last wake-up: a
+// wake window later, moved into the crib slot (COACH.cribSlotStart–bedtimeLatest),
+// never before bedtimeEarliest; a short-nap day goes earlier, floor still holds.
+// This is coachDay()'s bed rule. The Coach only reads today's live log, so the
+// screens outside it (Planner, Training, Patterns, home) ask this instead —
+// keep the two identical.
+function planCribMin(sMin, short, cfg) {
+  const c = cfg || cfgNow();
+  const floor = hhmmToMin(c.night.bedtimeEarliest);
+  const slotA = hhmmToMin(COACH.cribSlotStart), slotB = hhmmToMin(c.night.bedtimeLatest);
+  const plus = sMin + c.ww.target, plusMax = sMin + c.ww.lastOfDay;
+  return short ? Math.max(plus, floor) : Math.max(Math.min(Math.max(plus, slotA), slotB, plusMax), floor);
+}
+
+// Tonight's crib time: the plan's rule from his last wake-up. A projection, not a
+// target — it moves with him, and it is the same time the Coach shows.
 function projectTonight(cfg, st, t) {
   const T = t || now();
   const anchor = st.lastNapEnd || (wakeState(null, cfg, T).wokeAt);
   if (!anchor) return null;
-  let bed = new Date(anchor.getTime() + cfg.ww.lastOfDay * 60000);
-  const lo = atToday(cfg.night.bedtimeEarliest, T), hi = atToday(cfg.night.bedtimeLatest, T);
-  if (bed < lo) bed = lo;
-  if (bed > hi) bed = hi;
+  const short = st.naps.filter((b) => !b.running && b.fullMins < cfg.naps.minUsefulNap).length >= 2;
+  const bed = new Date(T.getFullYear(), T.getMonth(), T.getDate(), 0, planCribMin(minOfDay(anchor), short, cfg));
   const wake = averageMorningWake(cfg, T);
   return { bed, wake, mins: Math.round((wake - bed) / 60000) };
 }
@@ -3361,7 +3351,7 @@ function renderLeoData() {
     `</div>` +
     (proj
       ? `<div class="leo-proj"><span class="leo-proj-lab">Tonight, projected</span>` +
-        `<span class="leo-proj-val">asleep ~<b>${clockTime(proj.bed)}</b> → ~<b>${clockTime(proj.wake)}</b> ≈ ${plDur(proj.mins)}</span></div>`
+        `<span class="leo-proj-val">crib ~<b>${clockTime(proj.bed)}</b> → ~<b>${clockTime(proj.wake)}</b> ≈ ${plDur(proj.mins)}</span></div>`
       : "");
 
   const cap = $("leo-gauge-cap");
@@ -3723,7 +3713,7 @@ function renderDay() {
     ? "Naps today"
     : `Naps on ${dayRef.toLocaleDateString([], { weekday: "long" })}`;
   $("day-naps-total").textContent = `${st.napCount} nap${st.napCount === 1 ? "" : "s"} · ${plDur(st.napMins)}`;
-  $("day-target").textContent = `Target at ${cfg.band}: ${cfg.naps.minCount}–${cfg.naps.maxCount} naps, ` +
+  $("day-target").textContent = `Target at ${cfg.band}: ${napRange(cfg)} naps, ` +
     `${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
 
   // ---- The "now" line. Same three anchors the home hero uses, read off

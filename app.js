@@ -2193,14 +2193,11 @@ const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
 const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
 
 // When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
-// schedule — nobody wakes him to feed.
+// schedule — nobody wakes him to feed. It counts from the last FULL feed, on the
+// Coach's clock (left + right merged), so a snack doesn't restart it (Mike, 2 Oct).
 function feedGateAt(t) {
   const T = t || now();
-  const f = events
-    .filter((e) => (e.type === "breast" || e.type === "bottle"))
-    .map((e) => new Date(e.end_at || e.start_at))
-    .filter((d) => d <= T)
-    .sort((a, b) => b - a)[0];
+  const f = coachLastFullFeed(T);
   if (!f) return null;
   return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
 }
@@ -2244,14 +2241,14 @@ function trainTonightHTML() {
   }
 
   const target = proj
-    ? `<b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - 25 * 60000))}</b>`
+    ? `crib <b>${clockTime(proj.bed)}</b> — routine from <b>${clockTime(new Date(proj.bed.getTime() - COACH.routineMin * 60000))}</b>`
     : "log a nap and this fills in";
 
   return session + `
   <div class="tr-plan">
     <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
     <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
-      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last feed ${clockTime(gate.last)})</span>` : "no feed logged yet"
+      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
     }</span></div>
     <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
   </div>
@@ -2259,8 +2256,8 @@ function trainTonightHTML() {
   <div class="tr-shift">
     <div class="tr-shift-h">Whose wake is it</div>
     <div class="tr-shift-grid">
-      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake under 3 hours. Ladder only — no boob, no exceptions on a healthy night.</span></div>
-      <div class="tr-shift-c emma"><b>Emma</b><span>Only real feeds, 3+ hours after the last one. Otherwise earplugs — the rest is his.</span></div>
+      <div class="tr-shift-c mike"><b>Mike</b><span>Every wake with the feed gate closed — all night, including after 2 AM. The steps only, no boob, on a healthy night.</span></div>
+      <div class="tr-shift-c emma"><b>Emma</b><span>Only feeds with the gate open — ${plDur(cfg.night.feedGateMin)}+ since his last full feed. Before 2 AM she's asleep in the other room; Mike wakes her.</span></div>
     </div>
     <p class="tr-shift-n">He can smell the milk on Emma, so he escalates harder at her for a wake that isn't hunger. Agree the two windows out loud <b>before 7pm</b>. Never renegotiate at 2am in the hallway — review over coffee at 8.</p>
   </div>
@@ -2273,7 +2270,7 @@ function trainTonightHTML() {
     <p class="tr-cue-t"><b>The test:</b> if his eyes crack open when he touches the mattress, you didn't fail — you got it exactly right. <b>Too late</b> = eyes closed 30+ seconds, breathing deep and even. Then the crib gets a sleeping baby, he surfaces, and the panic is the mismatch.</p>
   </div>
 
-  <div class="sl-gate"><b>The one line:</b> bouncing to <b>calm</b> is always allowed — that's rung 3. Bouncing all the way to <b>sleep</b> is the prop. The bounce is the fire extinguisher, not the bed.</div>`;
+  <div class="sl-gate"><b>The one line:</b> still arms to calm him — no bouncing, no walking, no ball. Calm, not asleep. Then back in the crib, awake.</div>`;
 }
 
 // ---------- Sub-tab: LADDER ----------

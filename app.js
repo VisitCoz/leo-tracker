@@ -2430,11 +2430,11 @@ function trainProgressHTML() {
 
   return `
   <div class="tr-gatebox ${unlocked ? "on" : ""}">
-    <div class="tr-gate-h">${unlocked ? "🎉 Phase 2 unlocked" : "Phase 2 gate"}</div>
+    <div class="tr-gate-h">Bedtime streak</div>
     <div class="tr-pips">${"●".repeat(Math.min(streak, GATE_NIGHTS))}${"○".repeat(Math.max(0, GATE_NIGHTS - streak))}</div>
     <p class="tr-gate-n">${unlocked
-      ? `Bedtime has been under ${GATE_MINS} minutes ${streak} nights running. The morning nap can move to the crib — see the Method tab.`
-      : `${streak} of ${GATE_NIGHTS} nights under ${GATE_MINS} minutes. Don't start naps yet — just keep counting.`}</p>
+      ? `🎉 ${streak} nights running under ${GATE_MINS} minutes — bedtime has clicked.`
+      : `${streak} of ${GATE_NIGHTS} nights asleep within ${GATE_MINS} minutes of the crib.`}</p>
   </div>
 
   ${bars}
@@ -2463,8 +2463,8 @@ function trainProgressHTML() {
 
   <div class="tr-judge">
     <div class="tr-ov-h">How to judge it</div>
-    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never evaluate before night 5.</p>
-    <p class="tr-notwin"><b>And success at 6 months is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most cycle wakes, eats when he's actually hungry. Seven-to-seven silence is a September conversation, after Dr. León clears night weaning.</p>
+    <p><b>Compare weeks to weeks, never night to night.</b> Single nights lie constantly — teeth, gas, storms, leaps. A week that averages better than last week is working, even with an ugly night inside it. Never judge before the night-7 checkpoint; rule changes wait for the Sunday review.</p>
+    <p class="tr-notwin"><b>And success right now is not "sleeps through".</b> It's: falls asleep in the crib, resettles himself at most wakes, eats when the gate is open. 1–2 night feeds are normal at his age — night-weaning is a separate decision, with Dr. León.</p>
   </div>`;
 }
 

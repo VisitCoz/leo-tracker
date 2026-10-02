@@ -2278,14 +2278,14 @@ const TRAIN_LADDER = `
   <div class="tr-triage">
     <div class="tr-triage-h">First, listen. The sound picks the rung.</div>
     <div class="tr-tr-row calm"><span class="tr-tr-s">Active, babbling, squirming</span><span class="tr-tr-a">Do nothing. Stay out of sight.</span></div>
-    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 1–2 minutes. Hands off.</span></div>
+    <div class="tr-tr-row fuss"><span class="tr-tr-s">Fussing, grumbling</span><span class="tr-tr-a">Wait 2 minutes. Out of sight.</span></div>
     <div class="tr-tr-row cry"><span class="tr-tr-s">Real crying, climbing</span><span class="tr-tr-a">Start at rung 2.</span></div>
     <div class="tr-tr-row scream"><span class="tr-tr-s">Hard screaming, panic</span><span class="tr-tr-a">Go now. Straight to rung 3.</span></div>
   </div>
 
   <div class="tr-ladder">
-    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 1–2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
-    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power in week 1 and then suddenly works around nights 4–6. That's the signal the crib association has flipped.</em></div></div></div>
+    <div class="tr-rung"><div class="tr-rn">1</div><div><div class="tr-rt">Wait</div><div class="tr-rd">Fussing is him working it out. 2 full minutes, hands off, out of sight. This is where he does the learning — going in early steals the rep.</div></div></div>
+    <div class="tr-rung"><div class="tr-rn">2</div><div><div class="tr-rt">Hand on chest + shhh, in the crib</div><div class="tr-rd">Chupón in. Stay low and boring. Give it a real chance — 1–2 minutes. <em>This rung has almost no power on nights 1–2 and then starts working around night 3. That's the signal the crib association has flipped.</em></div></div></div>
     <div class="tr-rung"><div class="tr-rn">3</div><div><div class="tr-rt">Pick up and calm — fully</div><div class="tr-rd">Held <b>still</b> against your chest, in the dark. Not bouncing, not walking laps. No time limit: fully calm means crying stopped, body loose and heavy, breathing slow. Usually 5–10 boring minutes.</div></div></div>
     <div class="tr-rung"><div class="tr-rn">4</div><div><div class="tr-rt">Back down awake</div><div class="tr-rd">Calm but <b>not asleep</b>. Chupón in, hand on chest a few seconds, then withdraw. He restarts the second he touches the mattress? Normal. Rung 2 first, not straight back to arms.</div></div></div>
     <div class="tr-rung last"><div class="tr-rn">5</div><div><div class="tr-rt">Repeat, identically</div><div class="tr-rd">The number of rounds isn't the score — <b>sameness</b> is. 5–8 rounds on a night-1 wake is normal. Every identical round teaches him the deal doesn't change.</div></div></div>
@@ -2293,13 +2293,13 @@ const TRAIN_LADDER = `
 
   <div class="tr-override">
     <div class="tr-ov-h">⚠️ The override</div>
-    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, calm him completely. Holding, swaying, chupón, all fine.</p>
+    <p><b>Never wait out hard screaming.</b> Waiting applies to fussing, never to screams. A screaming baby is in panic, and babies can't learn anything in panic — they only escalate. Go in, pick him up, hold him still until he's calm. Chupón is fine. No bouncing, no walking.</p>
   </div>
 
   <div class="tr-notcio">
     <div class="tr-ov-h">This is not leaving him to cry</div>
     <p>He gets a response <b>every single time</b>, and arms every time he truly needs them. The only thing withheld on an under-3-hour wake is the boob — because that wake is habit, not hunger. Crying through a change with a parent right there leaves no trace; that's exactly what the 5-year follow-up measured.</p>
-    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. If a night is going to collapse, let it collapse completely into a comfort night and restart clean tomorrow.</p>
+    <p class="tr-worst"><b>The one genuinely bad outcome:</b> ladder for 20 minutes and <em>then</em> the boob. That teaches him to cry for 20 minutes first. A comfort night is only for pain or illness — when he doesn't calm in anyone's arms. A long protest still gets the steps until he sleeps. Stopping the plan is decided in the morning, together — never at 2 AM.</p>
   </div>
 
   <div class="tr-dont">

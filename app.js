@@ -1778,18 +1778,25 @@ const plIcon = (k) => ({wake:"☀️",feed:"🍼",nap:"💤",bed:"🌙"}[k]||"�
 // Age in whole weeks off the app's BIRTH constant.
 function ageWeeks() { return Math.max(0, Math.floor((now() - BIRTH) / 6048e5)); } // 7*864e5 ms/week
 
-function plGenerateDay(wakeMin, band, ww){
+// The plan's day, same rules as the Coach's coachDay(): a nap one wake window after
+// each wake-up (the short window only if the long one would miss the cutoff), every
+// nap over by the cutoff, the midday nap capped, crib by planCribMin(). No dream feed.
+function plGenerateDay(wakeMin, band){
+  const c=cfgNow(), cutoff=hhmmToMin(c.naps.lastNapCutoff), limit=cutoff-c.naps.minUsefulNap;
   const items=[]; const push=(t,kind,label,extra={})=>items.push({t,kind,label,...extra});
   push(wakeMin,"wake","Wake up"); push(wakeMin,"feed","Feed");
-  let cur=wakeMin, used=0;
+  let cur=wakeMin, used=0, napTotal=0;
   for(let i=0;i<band.naps;i++){
-    const down=cur+ww; if(i>0 && down>17*60) break;
-    push(down,"nap",`Nap ${i+1}`,{len:band.napLen});
-    const up=down+band.napLen; push(up,"wake",`Up from nap ${i+1}`); push(up+5,"feed","Feed");
-    cur=up; used++;
+    let down=cur+c.ww.target; if(down>limit) down=cur+c.ww.min;
+    if(down>limit) break;
+    let len=Math.min(band.napLen, cutoff-down, c.naps.totalDayMax-napTotal);
+    if(i>0) len=Math.min(len, COACH.middayCapMin);
+    push(down,"nap",`Nap ${i+1}`,{len});
+    const up=down+len; push(up,"wake",`Up from nap ${i+1}`); push(up+5,"feed","Feed");
+    cur=up; used++; napTotal+=len;
   }
-  const bed=cur+band.wwLast;
-  push(bed-20,"feed","Bedtime feed"); push(bed,"bed","Bed"); push(bed+210,"feed","Dream feed (optional)");
+  const bed=planCribMin(cur,false,c);
+  push(bed-COACH.routineMin,"feed","Routine: feed first"); push(bed,"bed","Crib");
   items.sort((a,b)=>a.t-b.t);
   return {items,bed,naps:used};
 }
@@ -1816,7 +1823,7 @@ function plAnalyzeEvent(day, band, evtMin, type, realLastFeedMin){
     after.push("Reset to local morning light fast; it re-anchors his clock within a few days.");
   } else {
     before.push(`Feed before you leave (last feed was ${realLastFeedMin!=null?plFmt(realLastFeedMin):"—"}).`);
-    if(statusClass==="warn") before.push("He'll be over his window — plan a motion nap (stroller/carrier) or shift the outing 30–45 min earlier.");
+    if(statusClass==="warn") before.push("He'll be over his window — shift the outing 30–45 min earlier, or plan a rescue nap in the carrier or a car ride, with an awake adult watching.");
     during.push(nextNap?`Next nap due ~${plFmt(nextNap.t)}. If the event runs past it, do the nap on the move.`:"No nap due during this window — good window for an outing.");
     after.push(nextNap?`Get him down for a nap by ~${plFmt(nextNap.t)} (or soon after a motion nap).`:`Resume the rhythm; next feed ~${nextFeed?plFmt(nextFeed.t):"—"}.`);
     after.push("If a nap got skipped or cut short, move bedtime ~30 min earlier to avoid overtiredness.");
@@ -1832,7 +1839,6 @@ const plStore = {
 const planner = {
   view:    plStore.get("view","today"),
   wake:    "06:30",
-  ww:      plStore.get("ww",null),
   evtType: plStore.get("evtType","outing"),
   evtTime: plStore.get("evtTime","08:30"),
   evtName: plStore.get("evtName","Breakfast"),
@@ -1848,15 +1854,12 @@ function plCurrentBand(){
     label:  c.band,
     wwMin:  c.ww.min,
     wwMax:  c.ww.max,
-    wwLast: c.ww.lastOfDay,
     naps:   c.naps.maxCount,
     napLen: Math.round(c.naps.totalDayMax / c.naps.maxCount),
     feeds:  c.feeds.perDayMax,
     solids: c.month >= 6,
   };
 }
-function plEffectiveWw(){ const b=plCurrentBand(); const def=Math.round((b.wwMin+b.wwMax)/2); return planner.ww==null?def:Math.min(Math.max(planner.ww,b.wwMin),b.wwMax); }
-
 // Morning wake from real data: earliest sleep that ENDED today (prefer night sleep), else 06:30.
 function plDefaultWake(){
   const ended = events.filter(e=>e.type==="sleep"&&e.end_at&&isToday(e.end_at))
@@ -1873,26 +1876,23 @@ function plRenderAgebar(){
   $("pl-agebar").innerHTML =
     `<div><span class="pl-num">${ageMonths()}</span><span class="pl-lab">months</span></div>
      <div><span class="pl-num">${ageWeeks()}</span><span class="pl-lab">weeks</span></div>
-     <div class="pl-band">${b.label}<span>${b.naps} naps · ~${plDur(plEffectiveWw())} windows · ${b.solids?"+ solids":"milk only"}</span></div>`;
+     <div class="pl-band">${b.label}<span>${b.naps} naps · ${plDur(cfgNow().ww.target)} windows · ${b.solids?"+ solids":"milk only"}</span></div>`;
 }
 
 function buildPlToday(){
   if(!plWakeTouched) planner.wake = plDefaultWake();
-  const b=plCurrentBand(), ww=plEffectiveWw();
+  const c=cfgNow();
   return `<section>
     <div class="pl-controls">
       <label>Morning wake <input type="time" id="pl-wake" value="${planner.wake}"></label>
-      <label>Wake window: <b id="pl-wwval">${plDur(ww)}</b>
-        <input type="range" id="pl-ww" min="${b.wwMin}" max="${b.wwMax}" value="${ww}">
-        <span class="pl-hint">Auto-set from today's log · slide to adjust</span></label>
+      <span class="pl-hint">${plDur(c.ww.target)} awake, every time. ${plDur(c.ww.min)} only if he's still tired after 5 minutes of a new scene.</span>
     </div>
     <div id="pl-today-out"></div></section>`;
 }
 function renderPlTodayOut(){
-  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
-  const late = day.bed>20*60+30;
+  const b=plCurrentBand(), day=plGenerateDay(plToMin(planner.wake),b);
   $("pl-today-out").innerHTML =
-    `<div class="pl-summary">Predicted bedtime <b>${plFmt(day.bed)}</b> · ${day.naps} naps${late?' <em>— late; try an earlier wake or shorter windows.</em>':''}</div>
+    `<div class="pl-summary">Crib <b>${plFmt(day.bed)}</b> · routine from ${plFmt(day.bed-COACH.routineMin)} · ${day.naps} naps</div>
      <ul class="pl-timeline">${day.items.map(it=>`<li class="pl-k-${it.kind}"><span class="pl-tt">${plFmt(it.t)}</span><span class="pl-ic">${plIcon(it.kind)}</span><span class="pl-ll">${it.label}${it.len?` <em>· ${plDur(it.len)}</em>`:''}</span></li>`).join("")}</ul>`;
 }
 function buildPlEvent(){
@@ -1910,7 +1910,7 @@ function buildPlEvent(){
     <div id="pl-event-out"></div></section>`;
 }
 function renderPlEventOut(){
-  const b=plCurrentBand(), ww=plEffectiveWw(), day=plGenerateDay(plToMin(planner.wake),b,ww);
+  const b=plCurrentBand(), day=plGenerateDay(plToMin(planner.wake),b);
   const e=plAnalyzeEvent(day,b,plToMin(planner.evtTime),planner.evtType,plRealLastFeedMin());
   $("pl-event-out").innerHTML =
     `<div class="pl-status ${e.statusClass}"><b>${planner.evtName||"Event"} at ${plFmt(plToMin(planner.evtTime))}</b><br>${e.windowStatus}</div>
@@ -1933,7 +1933,6 @@ function renderPlanner(){
   if(planner.view==="today"){
     c.innerHTML=buildPlToday(); renderPlTodayOut();
     $("pl-wake").addEventListener("input",e=>{planner.wake=e.target.value;plWakeTouched=true;renderPlTodayOut();});
-    $("pl-ww").addEventListener("input",e=>{planner.ww=+e.target.value;plStore.set("ww",planner.ww);$("pl-wwval").textContent=plDur(planner.ww);renderPlTodayOut();});
   } else if(planner.view==="event"){
     c.innerHTML=buildPlEvent(); renderPlEventOut();
     $("pl-evtName").addEventListener("input",e=>{planner.evtName=e.target.value;plStore.set("evtName",planner.evtName);renderPlEventOut();});

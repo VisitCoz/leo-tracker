@@ -2475,14 +2475,14 @@ function trainRescueHTML() {
   return `
   <div class="tr-vs">
     <div class="tr-vs-c"><b>Protest</b><span>Calms when you hold him. Settles within minutes in your arms. Restarts when he's put down.</span></div>
-    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 30+ minutes inconsolable in your arms. Arching, legs pulled up.</span></div>
+    <div class="tr-vs-c pain"><b>Pain</b><span>Does <b>not</b> calm when held. 20–30 minutes inconsolable in anyone's arms. Arching, legs pulled up.</span></div>
   </div>
   <p class="tr-vs-n">That's the whole test. <b>Protest calms when held; pain doesn't.</b> The training rules assume a comfortable baby — the moment he isn't one, the rules are suspended and you just comfort your son. Bounce, boob, chest, whatever works.</p>
 
   <div class="tr-check">
     <div class="tr-ov-h">The 10-minute checklist</div>
     <ol>
-      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time.</li>
+      <li><b>Temperature.</b> ≥37.5°C changes the night — Febraxito protocol, note the time. 38 °C or more: he's sick — rescue night, no steps.</li>
       <li><b>Big burp.</b> A full 3–4 minutes, not 30 seconds. Upright on your shoulder, belly against you, firm pats. Also seated on your forearm, leaning forward.</li>
       <li><b>Nose.</b> Blocked = he can't settle lying flat. Sterimar, wait a minute, suction only if it's clearly blocking.</li>
       <li><b>Gums.</b> Finger sweep for a hard ridge or bulge. Drool rash, red cheeks, ear-rubbing.</li>

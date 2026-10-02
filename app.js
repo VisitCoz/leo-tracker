@@ -1174,17 +1174,23 @@ function evaluateAlerts(evts, cfg, t) {
   const bedLo = hhmmToMin(c.night.bedtimeEarliest), bedHi = hhmmToMin(c.night.bedtimeLatest);
   // ns.logged already means "he's gone down for this night" — the old sameDay()
   // test couldn't see a night that started before midnight.
-  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !ns.logged) out.push({
-    id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
-    title: `Bedtime window open`,
-    body: `Crib between ${clockTime(w.opensAt)} and ${clockTime(w.closesAt)}. Start the routine now — calm and a bit later beats fast and too early.`,
-  });
+  if (!w.asleep && nowMin >= bedLo && nowMin <= bedHi && w.awakeMin >= w.windowMin && !ns.logged) {
+    // The crib time is the plan's (projectTonight → planCribMin), the same one the Coach shows.
+    const pj = projectTonight(c, st, T);
+    out.push({
+      id: "bedtime-open", sev: "warn", key: `bedtime:${dk}`, push: true,
+      title: `Bedtime window open`,
+      body: pj
+        ? `Routine from ${clockTime(new Date(pj.bed.getTime() - COACH.routineMin * 60000))}: feed → pajamas → massage → white noise → crib awake at ${clockTime(pj.bed)}.`
+        : `Routine: feed → pajamas → massage → white noise → crib awake.`,
+    });
+  }
 
   // 🔵 One nap too many.
   if (st.napCount > c.naps.maxCount) out.push({
     id: "extra-nap", sev: "info", key: `napover:${dk}:${st.napCount}`, push: false,
     title: `That's nap #${st.napCount}`,
-    body: `At ${c.band}, ${c.naps.minCount}–${c.naps.maxCount} naps is the target. Consider holding him to bedtime instead.`,
+    body: `The plan is ${c.naps.maxCount} naps — never a third. Next time: keep him busy and outside, and bring bedtime earlier (never before ${clockTime(atToday(c.night.bedtimeEarliest))}).`,
   });
 
   // 🔵 Fragmented day — the pattern behind "he fights bedtime every night".
@@ -1195,18 +1201,15 @@ function evaluateAlerts(evts, cfg, t) {
     body: `Naps under ${c.naps.minUsefulNap} min drain sleep pressure without restoring much. Bedtime comes earlier tonight, never before ${clockTime(atToday(c.night.bedtimeEarliest))}. Never a third nap.`,
   });
 
-  // 🔵 Night feed spacing — INFORMATION, not a gate. Whether Leo needs a night feed
-  // is a weight-and-pediatrician question; this app doesn't get a vote on it.
+  // 🔵 The feed gate, on the Coach's own clock: the last FULL feed (left + right
+  // merged), so a 4-minute snack doesn't restart it (Mike's call, 2 Oct). Reads the
+  // live log through coachGate(); no full feed since tonight's routine → no card.
   if (ns.isNight) {
-    const lastNight = list
-      .filter((e) => e.type === "breast" || e.type === "bottle")
-      .map((e) => new Date(e.end_at || e.start_at))
-      .filter((d) => d <= T && (T - d) <= 12 * 3600000 && isNightFeedTime(d, c))
-      .sort((a, b) => b - a)[0];
-    if (lastNight) out.push({
-      id: "feed-gate", sev: "info", key: `feedgate:${lastNight.getTime()}`, push: false,
-      title: `Last night feed ${clockTime(lastNight)} · ${plDur(Math.round((T - lastNight) / 60000))} ago`,
-      body: `Typical spacing at ${c.band} is around ${plDur(c.night.feedGateMin)}. For reference only — feeding is a weight-and-doctor decision, not a clock decision.`,
+    const g = coachGate(T);
+    if (g.known) out.push({
+      id: "feed-gate", sev: "info", key: `feedgate:${g.last.getTime()}`, push: false,
+      title: `Last full feed ${clockTime(g.last)} · ${plDur(Math.round(g.sinceMin))} ago`,
+      body: `Feed gate: ${plDur(c.night.feedGateMin)} since his last full feed. Under it → Mike and the steps. Over it → Emma feeds, sitting up. Never wake him to feed.`,
     });
   }
 

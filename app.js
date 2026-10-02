@@ -1975,7 +1975,7 @@ function sleepBannerHTML(){
     <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — in the 4–6 month window where gentle sleep-shaping is appropriate. Start <b>Phase 1</b> below now: same bedtime and wake time, morning light, a short routine, and laying him down drowsy but awake. <b>Keep all his feeds.</b> The more active step (<b>Phase 2 — bedtime fading</b>) has its strongest research support from about 6 months — <b>~${wksToSix} ${wksToSix === 1 ? "week" : "weeks"} away</b> for Leo, so treat it as <em>coming soon</em>, not <em>now</em>.</p></div>`;
   return `<div class="sl-banner green">
     <div class="sl-banner-eyebrow">🟢 Green light — the full plan fits Leo now</div>
-    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — past 6 months, where the research is strongest. Both phases below are well-supported. Use Phase 2 (bedtime fading) if he needs more help. Keep feeds unless Dr. León Magaña has guided otherwise.</p></div>`;
+    <p>Leo is <b>${mo} ${moWord} (${w} weeks)</b> — past 6 months, where the research is strongest. We're on the 7-night plan: the 🧭 Coach has tonight's steps. Keep his night feeds (1–2 is normal) unless Dr. León Magaña says otherwise.</p></div>`;
 }
 
 // Real-data progress: last 7 days from the tracker's `events`.
@@ -2518,8 +2518,10 @@ function trainRescueHTML() {
 // ---------- Sub-tab: METHOD ----------
 function trainMethodHTML() {
   const cfg = cfgNow();
-  const unlocked = phase2Unlocked();
-  const streak = bedtimeStreak();
+  const st = sleepDayStats();
+  const proj = st.lastNapEnd ? projectTonight(cfg, st) : null;
+  // The day's rules are the Coach's own text, so this tab can't drift from it again.
+  const dayRules = coachRules().filter((s) => ["Days", "Crib naps", "Rescue nap"].includes(s.h));
   return sleepBannerHTML() + `
   <h2>The one idea behind all of it</h2>
   <div class="sl-card">
@@ -2536,55 +2538,28 @@ function trainMethodHTML() {
     <span class="sl-chip key">Crib, drowsy but awake</span>
   </div>
   <div class="sl-card">
-    <p>20–30 minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. The bath is optional and doesn't have to be in the chain at all; if he comes out of it wired, move it 1½ hours earlier or to the morning.</p>
+    <p>${COACH.routineMin} minutes, same order every night. <b>Feed first, crib last</b> — that gap is what stops feed-to-sleep rebuilding. No bath in the routine. Mike puts him down.</p>
     <p>The routine doesn't <em>make</em> him sleepy — it announces sleep to a brain that's already ready. Work backwards from his window: last nap ended ${
-      sleepDayStats().lastNapEnd ? `<b>${clockTime(sleepDayStats().lastNapEnd)}</b>, so lights-out lands around <b>${clockTime(new Date(sleepDayStats().lastNapEnd.getTime() + cfg.ww.lastOfDay * 60000))}</b>` : "— log a nap and this fills in"
+      proj ? `<b>${clockTime(st.lastNapEnd)}</b>, so crib lands at <b>${clockTime(proj.bed)}</b> — ${plDur(cfg.ww.target)} later, moved into the ${clockTime(atToday(COACH.cribSlotStart))}–${clockTime(atToday(cfg.night.bedtimeLatest))} slot, never before ${clockTime(atToday(cfg.night.bedtimeEarliest))}` : "— log a nap and this fills in"
     }. Start too early and you get a well-massaged, wide-awake baby doing four ladder rounds.</p>
   </div>
 
-  <h2>The three phases</h2>
-  <p class="sl-lead">Nights first. Naps convert in days once nights are solid — reverse the order and both fall apart.</p>
-  <div class="sl-phase${!unlocked ? " tr-here" : ""}">
-    <div class="sl-ph-head"><span>Phase 1 · Nights only</span><span class="sl-when">${!unlocked ? "◀ we are here" : "done"}</span></div>
-    <div class="sl-ph-body">
-      <ul>
-        <li><b>Change nothing about the day.</b> Bounce, white noise, stroller naps — all of it, guilt-free.</li>
-        <li>Protected daytime sleep is what <em>funds</em> the night project. An overtired baby cannot learn to settle at 7pm.</li>
-        <li>Bedtime: the routine above, into the crib drowsy but awake, ladder as needed.</li>
-      </ul>
-    </div>
-  </div>
-  <div class="sl-phase${unlocked ? " tr-here" : ""}">
-    <div class="sl-ph-head"><span>Phase 2 · Convert the morning nap only</span><span class="sl-when">${unlocked ? "◀ unlocked" : `${streak}/${GATE_NIGHTS} nights`}</span></div>
-    <div class="sl-ph-body">
-      <ul>
-        <li><b>Gate:</b> bedtime ≤${GATE_MINS} minutes for ${GATE_NIGHTS}–5 nights running.</li>
-        <li>Nap 1 only — it carries the highest sleep pressure of the day, so it has the best odds. Naps 2 and 3 stay on the stroller, possibly for months.</li>
-        <li>Timing: ~2½ hours after morning wake. Up at 7:00 → wind-down 9:20, crib 9:30.</li>
-        <li>Mini version of bedtime, 2–3 minutes: dark room, white noise, brief cuddle. Same signals, compressed.</li>
-        <li><b>The 30-minute rescue rule:</b> not asleep after ~30 minutes of calm trying → get him up, keep him happy 15–20 min, then rescue the nap on the stroller. No guilt, no second attempt that day.</li>
-      </ul>
-      <p class="sl-note"><em>That rescue rule is what makes it safe to try. At bedtime, sleep pressure guarantees he'll eventually sleep. At nap time there's no guarantee — and a missed morning nap wrecks the whole day and that night. The nap experiment is never allowed to cost actual sleep. Expect the first crib naps to be short, 30–40 min. Length comes after settling does.</em></p>
-      <p class="sl-note"><b>Free head start:</b> run nap 1 in the bedroom now — dark, white noise, then bounce as usual. You're pre-loading the location so that when you convert, only one variable changes.</p>
-    </div>
-  </div>
-  <div class="sl-phase">
-    <div class="sl-ph-head"><span>Phase 3 · Nap 2, then done</span><span class="sl-when">later</span></div>
-    <div class="sl-ph-body"><ul><li>The last cat-nap of the day can live on the stroller basically forever — it dies on its own when he drops to two naps.</li></ul></div>
-  </div>
+  <h2>Days, on the 7-night plan</h2>
+  ${dayRules.map((s) => `<div class="sl-phase">
+    <div class="sl-ph-head"><span>${s.h}</span></div>
+    <div class="sl-ph-body"><ul>${s.items.map((x) => `<li>${x}</li>`).join("")}</ul></div>
+  </div>`).join("")}
 
   <h2>Mornings</h2>
   <div class="tr-two">
     <div class="tr-two-c no"><b>Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — still night</b><span>Room dark, voices off, night rules, feed gate applies. Even with a grumpy baby. If crying at 5:15 gets lights and morning, you've taught him the night ends at 5:15 — and he'll deliver that daily.</span></div>
     <div class="tr-two-c yes"><b>After ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — morning</b><span>Don't fight it. Leave, wait a beat, come back with the dramatic wake-up: lights on, curtains open, big voice, <em>"¡buenos días, Leo!"</em>, out of the dark room for the bottle. The contrast is doing real chronobiology.</span></div>
   </div>
-  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. If you want mornings at 6:30, bedtime moves later, 15 minutes every two nights — never adjusted on a bad night.</p>
+  <p class="sl-lead">The 5am wake is the hardest of the night — his sleep pressure is nearly spent, so he has the least biological help. Same script, lower expectations. And the arithmetic is honest: asleep 7:15 + 10 hours = 5:15am. Bedtime stays in the ${clockTime(atToday(COACH.cribSlotStart))}–${clockTime(atToday(cfg.night.bedtimeLatest))} slot. Before ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} is night: same steps. Moving bedtime is a Sunday-review decision, never a 5 AM one.</p>
 
   <h2>What the weeks look like</h2>
   <div class="tr-week">
-    <div class="tr-wk"><b>Nights 1–3</b><span>Worse or equal. This is the toll booth. Night 3 is often an extinction burst — he protests harder one last time to test whether the old system comes back.</span></div>
-    <div class="tr-wk"><b>Nights 4–7</b><span>Bedtime starts dropping toward 15 minutes. Rung 2 suddenly starts working. Some cycle-transition wakes simply stop happening.</span></div>
-    <div class="tr-wk"><b>Week 2–3</b><span>Bedtime consistently short, nap conversion unlocks.</span></div>
+    ${Object.entries(COACH_NIGHTS).map(([n, t]) => `<div class="tr-wk"><b>Night ${n}</b><span>${t}</span></div>`).join("")}
     <div class="tr-wk"><b>Week 3–4</b><span>The new normal: asleep ~7:15, two honest feeds, up ~6:15. Two feeds is completely fine at his age and weight.</span></div>
   </div>
 

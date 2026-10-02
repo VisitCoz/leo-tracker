@@ -2793,18 +2793,18 @@ async function sendChat(e) {
 
 const pctOfDay = (min) => Math.max(0, Math.min(100, (min / 1440) * 100));
 
-// ---- The night card's answer, in words. The gate is cfgNow().night.feedGateMin
-// — 3h at Leo's band today, 4h at the later ones — read here and nowhere else, so
-// the card starts saying 4h on its own the day he ages into it. "FEED OK" never
-// means wake him: it is a minimum gate, not a schedule, same as the Training tab,
-// which keeps its own "gate" wording. Plain words here because at 3am "gate is
-// OPEN" reads as jargon.
-const feedVerdict = (stretchMin, cfg) =>
-  stretchMin >= (cfg || cfgNow()).night.feedGateMin
-    ? { open: true,  word: "FEED OK" }
-    : { open: false, word: "NO FEED YET" };
+// ---- The night card's answer, in words. It is the Coach's feed gate — coachGate():
+// cfgNow().night.feedGateMin since his last FULL feed — so the card and the Coach
+// can't give two answers at 3am (Mike's call, 2 Oct; until then it followed the
+// sleep stretch). "FEED OK" never means wake him: it is a minimum gate, not a
+// schedule. Plain words here because at 3am "gate is OPEN" reads as jargon. No full
+// feed logged since tonight's routine → the Coach asks, and the card says so.
+const feedVerdict = (g) =>
+  !g.known ? { unknown: true, word: "NO FULL FEED LOGGED" }
+  : g.open ? { open: true,  word: "FEED OK" }
+  : { open: false, word: "NO FEED YET" };
 const verdictHTML = (v, inline) =>
-  `<span class="wake-verdict${inline ? " inline" : ""} ${v.open ? "open" : "shut"}">${v.word}</span>`;
+  `<span class="wake-verdict${inline ? " inline" : ""}${v.unknown ? "" : v.open ? " open" : " shut"}">${v.word}</span>`;
 const VERDICT_NOTE = `<span class="wake-verdict-note">only if he wakes — never wake him</span>`;
 
 // ---- The headline. ONE rule holds it together:
@@ -2872,12 +2872,12 @@ function renderLeoWake() {
     const night = ns.isNight;
     track.classList.add("hidden");
     // While he is awake the stretch that just ended is the number that matters —
-    // how long it ran, and whether that was long enough to feed. The total below it
+    // how long it ran — with the Coach's feed gate beside it. The total below it
     // holds: awake minutes are not sleep, so it never moves and never goes back.
     set(night ? `Awake since ${clockTime(since)}` : `Nap paused · ${clockTime(since)}`,
         heroTime(now() - since),
         night
-          ? `Slept <b>${plDur(nss.lastStretchMin)}</b> before this wake-up · ${verdictHTML(feedVerdict(nss.lastStretchMin, cfg), true)}`
+          ? `Slept <b>${plDur(nss.lastStretchMin)}</b> before this wake-up · ${verdictHTML(feedVerdict(coachGate()), true)}`
           : "Awake — still the same nap.",
         night
           ? `Still the same night. Keep it dark and quiet — morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))}, ${plDur(ns.minsToMorning)} away.`
@@ -2906,7 +2906,7 @@ function renderLeoWake() {
       set(`Asleep since ${clockTime(since)}`,
           heroTime(now() - since),
           // The word, then the one line that stops it being read as an instruction.
-          verdictHTML(feedVerdict(nss.lastStretchMin, cfg)) + VERDICT_NOTE,
+          verdictHTML(feedVerdict(coachGate())) + VERDICT_NOTE,
           (nss.wakes ? `Back down after ${nss.wakes} wake-up${nss.wakes === 1 ? "" : "s"}. ` : "Asleep for the night. ")
             + `Morning is ${plFmt(hhmmToMin(cfg.night.morningWakeEarliest))} — about ${plDur(ns.minsToMorning)} away.`,
           "night");
@@ -2925,11 +2925,14 @@ function renderLeoWake() {
            plFmt(hhmmToMin(cfg.night.morningWakeEarliest)), `the day starts, ${plDur(ns.minsToMorning)} away`);
       return;
     }
-    // In the bedtime window, not down yet.
-    set("Bedtime window · open",
+    // In the bedtime window, not down yet. The crib time is the plan's, as the Coach shows it.
+    const pj = projectTonight(cfg, st);
+    set("Bedtime",
         w.wokeAt ? heroTime(now() - w.wokeAt) : "—",
-        `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
-        "Calm and a bit later beats fast and too early.",
+        pj
+          ? `Crib at <b>${clockTime(pj.bed)}</b> — routine from <b>${clockTime(new Date(pj.bed.getTime() - COACH.routineMin * 60000))}</b>.`
+          : `Crib between <b>${clockTime(ns.nightStart)}</b> and <b>${clockTime(atToday(cfg.night.bedtimeLatest))}</b>.`,
+        `Short-nap day: earlier is right, never before ${clockTime(atToday(cfg.night.bedtimeEarliest))}.`,
         "night");
     pair(plDur(st.napMins), "day sleep today",
          `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");

@@ -2321,11 +2321,11 @@ function trainFeedsHTML() {
   const g = cfg.night.feedGateMin;
   return `
   <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
-    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No feed logged yet"}</div>
+    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
     ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
       ? `since ${clockTime(gate.opens)}`
       : `opens ${clockTime(gate.opens)}`}</div>
-    <p class="tr-gate-n">Last feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>
@@ -2348,10 +2348,9 @@ function trainFeedsHTML() {
     <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
     <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
     <ul>
-      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. At 6 months the day is interesting and he'll skip meals to look at things, then collect at night.</li>
+      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
       <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
       <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
-      <li>Optional: a dream feed around 10:30pm banks a full feed at a time <em>you</em> choose.</li>
     </ul>
     <p class="tr-signal">The signal it's working: a night feed shrinking to a 4-minute snack on its own. That one is becoming droppable. Expect 3–7 days.</p>
   </div>

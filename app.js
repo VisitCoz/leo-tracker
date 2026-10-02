@@ -250,6 +250,8 @@ function cfgNow() {
   if (_cfgCache.key !== key) _cfgCache = { key, value: resolveConfig(month, SETTINGS.overrides) };
   return _cfgCache.value;
 }
+// "2–3" naps, or just "2" when the plan pins both ends — never "2 of 2–2".
+const napRange = (c, max = c.naps.maxCount) => c.naps.minCount === max ? `${max}` : `${c.naps.minCount}–${max}`;
 
 // ============================================================
 //  0c. DERIVATIONS — two functions, read everywhere
@@ -2306,7 +2308,7 @@ const TRAIN_LADDER = `
     <div class="tr-ov-h">Never</div>
     <ul>
       <li><b>Never put a crying baby in the crib.</b> The crib is only ever for a calm baby. Calm first, then down.</li>
-      <li>Never bounce all the way to sleep.</li>
+      <li>No bouncing, no walking, no ball — still arms, on a healthy night.</li>
       <li>Never pick up automatically at every wake — the sound decides.</li>
       <li>Never sneak away. Same phrase every time: <em>"ya vengo, Leo."</em></li>
       <li>Never let the boob be the last step before the crib.</li>
@@ -2856,7 +2858,7 @@ function renderLeoWake() {
         heroTime(now() - new Date(bed.start_at)),
         mins <= GATE_MINS ? `Under ${GATE_MINS} minutes so far` : `Calm first, then down awake.`,
         mins <= GATE_MINS
-          ? `Nights under ${GATE_MINS} minutes are what unlock nap training.`
+          ? `Nights under ${GATE_MINS} minutes are the sign bedtime has clicked.`
           : `The number of rounds matters more than the clock. Keep them identical.`,
         ns.isNight ? "night" : mins <= GATE_MINS ? "green" : "amber");
     pair(null);
@@ -2890,7 +2892,7 @@ function renderLeoWake() {
            clockTime(ns.nightStart), "went down at");
     } else {
       pair(plDur(st.napMins), "day sleep today",
-           `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+           `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     }
     return;
   }
@@ -2935,7 +2937,7 @@ function renderLeoWake() {
         `Short-nap day: earlier is right, never before ${clockTime(atToday(cfg.night.bedtimeEarliest))}.`,
         "night");
     pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     return;
   }
 
@@ -2948,7 +2950,7 @@ function renderLeoWake() {
         "A nap after that steals the tiredness he needs for bedtime.",
         "green");
     pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${cfg.naps.minCount}–${cfg.naps.maxCount}`, "naps taken");
+         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
     track.classList.add("hidden");
     return;
   }
@@ -3105,8 +3107,8 @@ function renderNaps() {
   // The card header belongs to renderRing() now — it shows the 24h total, not
   // just naps. Setting it here as well just clobbered it.
   $("leo-naps-why").textContent = st.napCount > cap
-    ? `That's more than usual — ${cfg.naps.minCount}–${cap} naps a day is the target at ${cfg.band}.`
-    : `He usually has ${cfg.naps.minCount}–${cap} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
+    ? `That's more than usual — ${napRange(cfg, cap)} naps a day is the target at ${cfg.band}.`
+    : `He usually has ${napRange(cfg, cap)} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
 
   const ord = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
   $("leo-naps-list").innerHTML = st.naps.length
@@ -3711,7 +3713,7 @@ function renderDay() {
     ? "Naps today"
     : `Naps on ${dayRef.toLocaleDateString([], { weekday: "long" })}`;
   $("day-naps-total").textContent = `${st.napCount} nap${st.napCount === 1 ? "" : "s"} · ${plDur(st.napMins)}`;
-  $("day-target").textContent = `Target at ${cfg.band}: ${cfg.naps.minCount}–${cfg.naps.maxCount} naps, ` +
+  $("day-target").textContent = `Target at ${cfg.band}: ${napRange(cfg)} naps, ` +
     `${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
 
   // ---- The "now" line. Same three anchors the home hero uses, read off

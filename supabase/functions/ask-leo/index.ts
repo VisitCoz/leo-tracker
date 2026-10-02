@@ -5,11 +5,16 @@
 //
 //  Deploy:  npx supabase functions deploy ask-leo
 //  Secret:  npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-//  (JWT verification is ON by default, so only a logged-in family
-//   member can call this — protects the key from abuse.)
+//  JWT verification alone is NOT enough: it also accepts the public
+//  anon/publishable key from config.js, which is in a public repo. So the
+//  function itself checks the token belongs to a signed-in family member
+//  and answers 401 otherwise — that's what protects the key from abuse.
 // ============================================================
 
+import { createClient } from "npm:@supabase/supabase-js@2";
+
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
+const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
 const MODEL = "claude-opus-4-8";
 const BIRTH_DATE = new Date("2026-01-23T00:00:00");
 
@@ -108,6 +113,18 @@ async function callClaude(system: any[], messages: any[], maxTokens: number, eff
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+
+  // Only a real signed-in user gets through. The public key alone resolves to no user.
+  const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+  const { data: { user } } = token
+    ? await supabase.auth.getUser(token)
+    : { data: { user: null } };
+  if (!user || user.role !== "authenticated") {
+    return new Response(JSON.stringify({ error: "Not signed in" }), {
+      status: 401,
+      headers: { ...cors, "Content-Type": "application/json" },
+    });
+  }
 
   try {
     const {

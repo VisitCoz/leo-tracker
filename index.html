@@ -17,7 +17,7 @@
   <!-- Fonts: Fraunces (serif headings) + Inter (clean body) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Mulish:wght@400;600;700;800&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -86,6 +86,8 @@
         </div>
         <div id="leo-sleep-actions" class="leo-sleep-actions"></div>
         <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
+        <!-- Static sibling, never inside #leo-sleep-actions: that host is wiped on every state change. -->
+        <button id="leo-coach-btn" class="coach-launch" type="button">🧭 Coach <span>· what do we do now?</span></button>
       </section>
 
       <!-- 2. The 24-hour ring. Last night and today's naps in one object, placed by
@@ -322,6 +324,12 @@
     <section id="tab-settings" class="tab hidden">
       <div id="settings-content"></div>
     </section>
+
+    <!-- ============ COACH — full-screen overlay (inside #app-view, so sign-out hides it) ============ -->
+    <div id="coach" class="hidden" role="dialog" aria-modal="true" aria-label="Coach">
+      <div id="coach-body" class="co-wrap"></div>
+      <div id="coach-toast" class="co-toast hidden" role="status" aria-live="polite"></div>
+    </div>
 
     <!-- ============ BOTTOM NAV ============ -->
     <nav class="bottomnav">

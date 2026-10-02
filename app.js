@@ -668,6 +668,7 @@ async function showApp() {
   // card only appears on a real birthday, not the first time you open the app.
   try { if (localStorage.getItem(SEEN_MONTH_KEY) === null) localStorage.setItem(SEEN_MONTH_KEY, String(ageMonths())); } catch (e) {}
   await loadSettings();                        // before loadEvents — every render reads cfg
+  loadCoachPlan();                             // the 7-night plan row; not awaited, nothing waits on it
   await loadEvents();
   await loadMessages();
   await loadGrowth();
@@ -699,6 +700,7 @@ async function loadEvents() {
   // The day bar / budget / night patterns live under Training → Patterns now, and
   // renderSleep() fills them when that sub-tab is open.
   if (tabOpen("sleep")) renderSleep();
+  coachRefresh();                      // the other parent's taps arrive here through realtime
 }
 
 // ============================================================
@@ -1190,7 +1192,7 @@ function evaluateAlerts(evts, cfg, t) {
   if (shortNaps.length >= 2) out.push({
     id: "snack-naps", sev: "info", key: `snack:${dk}:${shortNaps.length}`, push: false,
     title: `${shortNaps.length} short naps today`,
-    body: `Naps under ${c.naps.minUsefulNap} min drain sleep pressure without restoring much. Expect to need the later end of the bedtime window.`,
+    body: `Naps under ${c.naps.minUsefulNap} min drain sleep pressure without restoring much. Bedtime comes earlier tonight, never before ${clockTime(atToday(c.night.bedtimeEarliest))}. Never a third nap.`,
   });
 
   // 🔵 Night feed spacing — INFORMATION, not a gate. Whether Leo needs a night feed
@@ -1317,6 +1319,7 @@ function render() {
   }
   if (tabOpen("leo")) tickRing();          // one rotation, nothing rebuilt
   if (tabOpen("day")) tickDay();           // one number, nothing rebuilt
+  if (coachOpen()) tickCoach();            // timers as text; rebuilds only when a threshold flips
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -3490,6 +3493,7 @@ function renderNightMetrics(cfg) {
 async function onSettingsChanged(payload) {
   const row = payload && payload.new;
   if (!row) return;
+  if (row.key === "coach_plan") { coachState.plan = row.value || null; coachRefresh(); return; }
   if (row.key === "baby") SETTINGS.baby = { ...SETTINGS.baby, ...row.value };
   if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
   settingsRev++;
@@ -4065,6 +4069,1050 @@ function renderFood() {
 }
 
 // ============================================================
+//  10k. COACH — "what do we do now?", step by step, for the 7-night plan
+// ============================================================
+// A full-screen overlay opened from the home card. It keeps NO log of its own:
+// every tap goes through the same helpers as the home buttons (pauseSleep,
+// resumeSleep, startSleep, endSleep, tapBreast, the bedtime session and the
+// rescue toggle), so both phones and every other screen see the same night.
+//
+// Age-band numbers still come from cfgNow() (feed gate, wake windows, nap cutoff,
+// bedtime floor/latest, full-feed minutes). The constants below are the PLAN's
+// own rules (handoff §3, 2 Oct 2026), not age targets, which is why they live here.
+const COACH = {
+  cribSlotStart: "18:45",   // crib slot opens; cfg.night.bedtimeLatest closes it, bedtimeEarliest is the floor
+  routineMin: 30,           // bedtime routine starts this long before the crib
+  windDownMin: 5,           // nap mini-routine: curtains, sleep sack, white noise, 30-second hold
+  waitMin: 2,               // step 1: wait out of sight
+  painCheckMin: 20,         // holding this long without calming → pain check
+  rescueNapMin: 30,         // nap routine start → rescue nap
+  middayCapMin: 105,        // the midday nap stops at 1h45
+  sessionGapMin: 10,        // left + right breast rows this close together are ONE feed
+  routineFeedLeadMin: 90,   // a full feed this long before night start is tonight's routine feed
+  chatKey: "leo_coach_chat_v1",
+  speakKey: "leo_coach_speak",
+  dimKey: "leo_coach_dim",
+};
+
+const COACH_NIGHTS = {
+  1: "The loudest night. He's confused that the old way isn't coming. Follow the steps, nothing else.",
+  2: "Usually the peak, often worse than night 1. Every past attempt stopped here. Don't negotiate.",
+  3: "The break shows: shorter rounds, step 2 starts working.",
+  4: "Bedtime settles in under 20 minutes. Wakes dropping toward 2.",
+  5: "Bedtime under 20 minutes again, wakes toward 2. Keep everything the same.",
+  6: "The new normal: same bedtime slot, about 2 wakes, rarely past step 2.",
+  7: "Checkpoint: bedtime in the same 30-minute slot, about 2 wakes, settling himself. If tonight looks like night 1, look at the data together on Sunday.",
+};
+
+const COACH_SAFE = [
+  "Mattress on its lowest setting. He's close to pulling himself up to stand.",
+  "Bare crib: fitted sheet only. No bumpers, pillows, blankets or toys.",
+  "Plain pacifier. No clip, cord or attached toy.",
+  "A sleep sack that fits, nothing over his head. Sweaty or hot chest → go lighter.",
+  "Every sleep: onto his back. If he rolls over by himself, leave him.",
+];
+
+const COACH_911 = "Call 911 now if he is struggling to breathe, his lips or skin turn blue or grey, he has a seizure, or you can't wake him.";
+const COACH_RED = [
+  "Screaming that comes in waves with quiet gaps in between, legs pulled up",
+  "Vomiting (above all green vomit), or blood or jelly in the diaper",
+  "Floppy, very sleepy or hard to wake",
+  "A rash that doesn't fade when you press a glass on it",
+  "A bulging soft spot on his head",
+  "Fever of 38 °C or more and he looks sick, any fever of 39.4 °C or more, or a fever lasting over 24 hours",
+  "Not drinking, or far fewer wet diapers",
+  "Crying nonstop for more than 2 hours, or after a knock to the head",
+];
+const COACH_LIMIT = "At your limit? Put him in the crib on his back, step out and breathe for 5 minutes. Wake Emma. Crying won't hurt him; shaking can.";
+
+// The rules screen and the AI read the same text, so they can't drift apart.
+function coachRules() {
+  const c = cfgNow();
+  const gate = plDur(c.night.feedGateMin);
+  return [
+    { h: "Who does what at night", items: [
+      `Feeds, when the feed gate is open: Emma. Before 2 AM she's asleep in the other room, so Mike wakes her.`,
+      `Every wake with the gate closed: Mike runs the steps, all night, including after 2 AM. Emma stays out of the room: if he smells milk, he keeps asking for it.`,
+      `Emma sleeps 8 PM–2 AM in the other room, with earplugs.`] },
+    { h: "Bedtime", items: [
+      `Routine, ${COACH.routineMin} minutes before the crib: feed → pajamas → massage → white noise → crib awake, on his back.`,
+      `The feed is the FIRST step, never the last. No bath in the routine. Mike puts him down.`,
+      `Crib 3 hours after his last nap, moved into ${clockTime(atToday(COACH.cribSlotStart))}–${clockTime(atToday(c.night.bedtimeLatest))} (the last stretch may run up to ${plDur(c.ww.lastOfDay)} to get there). If his last nap ends early, crib comes earlier, never before ${clockTime(atToday(c.night.bedtimeEarliest))}.`,
+      `Short-nap day (2+ naps under ${c.naps.minUsefulNap} minutes): bedtime comes earlier, never before ${clockTime(atToday(c.night.bedtimeEarliest))}. Never a third nap.`,
+      `Crib when you see the green zone: slow blinks, heavy body, faraway gaze.`] },
+    { h: "The steps (feed gate closed)", items: [
+      `1 · Fussing: wait ${COACH.waitMin} minutes, out of sight.`,
+      `2 · Crying: hand on his chest, slow "shhh", pacifier. He stays in the crib.`,
+      `3 · Escalating: pick him up. Still arms: no bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.`,
+      `Then start again at step 1. No time limit on holds.`,
+      `Panic scream: go straight to step 3.`,
+      `White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.`,
+      `Hold him standing or on a hard upright chair. If you start nodding off, he goes into the crib on his back.`] },
+    { h: "Feed gate", items: [
+      `${gate}+ since his last full feed → Emma feeds him sitting up: not lying in bed, not on a sofa. Lights low, boring, then crib awake. If she feels herself dozing, he goes into the crib.`,
+      `A full feed is ${c.feeds.fullMin}+ minutes at the breast (both sides together) or a bottle of ${c.feeds.fullMl} ml or more.`,
+      `Under ${gate} → it isn't hunger. Mike and the steps.`,
+      `Never end the steps with a feed. If the gate opens while you're on the steps, keep going until he's asleep: no feed on this wake. If he falls asleep and wakes up later, that new wake is a feed.`,
+      `1–2 night feeds are normal at this age. This is not night-weaning.`] },
+    { h: "Protest or pain", items: [
+      `He calms in your arms → protest. Keep going.`,
+      `Arching at Mike that stops when Emma walks in → protest, not pain.`,
+      `Pain: inconsolable in anyone's arms for 20–30 minutes, arching, legs pulled up, worse lying flat → rescue night.`,
+      `Rescue night: say it out loud, comfort him fully any way that works (feeding included), restart within 48 hours.`,
+      `Never half a ladder and then the breast. That teaches him to cry longer.`] },
+    { h: "Teething", items: [
+      `Worst 2–3 nights: infant ibuprofen about 30 minutes before the routine. Measure only with the box's syringe.`,
+      `Before the first dose, have a pharmacist or your pediatrician write on the box the mL for his weight, for that exact bottle. Infant drops and children's liquid are different strengths.`,
+      `Never more often than every 6–8 hours. Skip it and call if he isn't drinking, is vomiting or has diarrhea.`,
+      `Fever of 38 °C or more = he's sick, not teething: rescue night, no steps.`,
+      `Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → not the tooth, keep going.`] },
+    { h: "Days", items: [
+      `${plDur(c.ww.target)} awake, then sleep. Every time.`,
+      `${c.naps.maxCount} naps, around 9:30 and 1:30. The midday nap stops at ${plDur(COACH.middayCapMin)}. Day sleep tops out at ${plDur(c.naps.totalDayMax)}.`,
+      `Every nap is over by ${clockTime(atToday(c.naps.lastNapCutoff))}. Nothing after that.`,
+      `Morning starts at ${clockTime(atToday(c.night.morningWakeEarliest))}. Before that it's night. The ${plDur(c.ww.target)} count from the morning wake-up.`] },
+    { h: "Crib naps", items: [
+      `Mini routine: curtains, sleep sack, white noise, a 30-second hold.`,
+      `Calm in still arms, not asleep, no ball. Into the crib awake, on his back. Steps if he protests.`,
+      `${COACH.rescueNapMin} minutes from the start of the routine and no sleep → rescue nap.`,
+      `Whoever starts the nap finishes it, Emma, Mike or Gloria: same routine, same steps.`] },
+    { h: "Rescue nap", items: [
+      `Let him sleep wherever it happens: carrier, arms, or a car ride. An awake adult watches him.`,
+      `Carrier: face visible, chin off his chest. When the drive ends, out of the car seat and into the crib on his back. Can't keep watching → crib on his back.`,
+      `Never bounce him to sleep and then transfer him. That rebuilds the old habit. Moving a sleeping baby to the crib for safety is always fine.`] },
+    { h: "Early tired signs", items: [
+      `Change the scene first: outside, light, a new toy, for 5 minutes.`,
+      `Still tired after that → crib at ${plDur(c.ww.min)}, the only exception to ${plDur(c.ww.target)}.`,
+      `3+ days in a row → shorten the window together at the Sunday review.`] },
+    { h: "Decisions", items: [
+      `Pausing or changing the plan happens in the morning, 6 AM to noon, together. Never at 2 AM.`,
+      `The morning review names one thing to watch. Rule changes wait for the Sunday review.`] },
+  ];
+}
+
+// ---- State ---------------------------------------------------------
+const coachLS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const coachState = {
+  view: "now",        // now | flow | ask | rules
+  flow: null,         // { mode: night|nap|bed, step, t0, stepT0, holdT0, rounds, gateNote }
+  plan: null,         // settings row 'coach_plan': { startDate: "YYYY-MM-DD", paused, pausedAt }
+  chat: coachLS.get(COACH.chatKey, []),
+  busy: false,
+  confirmUp: false,
+  sig: "",
+};
+const coachOpen = () => { const el = $("coach"); return !!el && !el.classList.contains("hidden"); };
+// Data arrived: redraw — except the Ask view, where a rebuild would wipe a half-dictated
+// question and drop the keyboard. There only the conversation list is refreshed.
+function coachRefresh() {
+  if (!coachOpen()) return;
+  if (coachState.view === "ask") coachRenderChat();
+  else renderCoach();
+}
+function coachRenderChat() {
+  const l = $("co-chat");
+  if (!l) return;
+  l.innerHTML = coachState.chat.map((m) => `<div class="co-msg ${m.role === "user" ? "me" : "ai"}">${coEsc(m.content)}</div>`).join("")
+    + (coachState.busy ? `<div class="co-msg ai co-typing">Thinking…</div>` : "");
+  l.scrollTop = l.scrollHeight;
+  const btn = document.querySelector("#co-ask button[type=submit]");
+  if (btn) btn.disabled = coachState.busy;
+}
+const coEsc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+// ---- Plan (shared by both phones through the settings table) ---------
+async function loadCoachPlan() {
+  if (!sb) return;
+  const { data, error } = await sb.from("settings").select("value").eq("key", "coach_plan").maybeSingle();
+  if (error) return;   // no settings table: the plan banner simply doesn't show
+  coachState.plan = (data && data.value) || null;
+  coachRefresh();
+}
+async function saveCoachPlan(value) {
+  const { error } = await sb.from("settings").upsert({ key: "coach_plan", value, updated_at: now().toISOString() }, { onConflict: "key" });
+  if (error) { coachToast("Couldn't save. Check the connection and try again."); return; }
+  coachState.plan = value;
+  renderCoach();
+}
+function coachPlanInfo(t) {
+  const T = t || now();
+  const p = coachState.plan;
+  const morning = minOfDay(T) >= hhmmToMin(cfgNow().night.morningWakeEarliest) && minOfDay(T) < 720;
+  if (!p || !p.startDate) return { p: null, n: null, morning };
+  const [y, m, d] = String(p.startDate).split("-").map(Number);
+  const start = new Date(y, m - 1, d);
+  // Same noon pivot as nightState(): before noon we're still in last night.
+  const anchor = minOfDay(T) < 720
+    ? new Date(T.getFullYear(), T.getMonth(), T.getDate() - 1)
+    : new Date(T.getFullYear(), T.getMonth(), T.getDate());
+  return { p, n: Math.round((anchor - start) / 86400000) + 1, morning, start };
+}
+
+// ---- Feeds: the gate counts from the last FULL feed ---------------------
+// Switching sides writes two breast rows; judged alone, 6 min left + 6 min right
+// would be two "partial" feeds. They're one feed, so they're merged first.
+function coachFeedSessions(t) {
+  const T = (t || now()).getTime();
+  const c = cfgNow();
+  const rows = events
+    .filter((e) => (e.type === "breast" || e.type === "bottle") && new Date(e.start_at).getTime() <= T)
+    .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+  const out = [];
+  for (const e of rows) {
+    if (e.type === "bottle") {
+      out.push({ end: new Date(e.end_at || e.start_at).getTime(), full: classifyFeed(e, c).kind === "full" });
+      continue;
+    }
+    const s = new Date(e.start_at).getTime();
+    if (!e.end_at) { out.push({ breast: true, running: true, start: s, end: T, mins: (T - s) / 60000, full: false }); continue; }
+    const en = new Date(e.end_at).getTime();
+    const prev = out[out.length - 1];
+    if (prev && prev.breast && !prev.running && s - prev.end <= COACH.sessionGapMin * 60000) {
+      prev.mins += Math.max(0, en - s) / 60000;
+      prev.end = Math.max(prev.end, en);
+      prev.full = prev.mins >= c.feeds.fullMin;
+    } else {
+      const mins = Math.max(0, en - s) / 60000;
+      out.push({ breast: true, start: s, end: en, mins, full: mins >= c.feeds.fullMin });
+    }
+  }
+  return out;
+}
+function coachLastFullFeed(t) {
+  const full = coachFeedSessions(t).filter((x) => x.full && !x.running);
+  return full.length ? new Date(full[full.length - 1].end) : null;
+}
+// known=false when no full feed is logged since tonight's routine: the gate
+// would otherwise time itself off an afternoon feed and say "open" by mistake.
+function coachGate(t) {
+  const T = t || now();
+  const c = cfgNow();
+  const ns = nightState(null, c, T);
+  const last = coachLastFullFeed(T);
+  // Anchor on crib time when there is a bedtime session: the night row only starts
+  // when he falls ASLEEP, which after an 80-minute protest drops the routine feed.
+  const tb = tonightsBedtime(T);
+  const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
+  const from = anchor - COACH.routineFeedLeadMin * 60000;
+  if (!last || last.getTime() < from) return { known: false, ns };
+  const opens = new Date(last.getTime() + c.night.feedGateMin * 60000);
+  return { known: true, open: T >= opens, last, opens, sinceMin: (T - last) / 60000, ns };
+}
+
+// ---- The day: next crib time, nap limits ---------------------------------
+function coachDay(t) {
+  const T = t || now();
+  const c = cfgNow();
+  const w = wakeState(null, c, T);
+  const st = sleepDayStats(null, T);
+  const done = st.naps.filter((b) => !b.running);
+  const out = { w, st, napsDone: done.length,
+    short: done.filter((b) => b.fullMins < c.naps.minUsefulNap).length >= 2 };
+
+  if (w.asleep && !isNightRow(w.asleep)) {
+    // Napping: when does this nap have to end?
+    const start = new Date(w.asleep.start_at);
+    const before = done.reduce((a, b) => a + b.fullMins, 0);
+    const napNo = done.length + 1;
+    const cands = [atToday(c.naps.lastNapCutoff, T).getTime(),
+                   start.getTime() + Math.max(0, c.naps.totalDayMax - before) * 60000];
+    if (napNo >= 2) cands.push(start.getTime() + COACH.middayCapMin * 60000);
+    out.kind = "napping"; out.napNo = napNo; out.start = start;
+    out.wakeBy = new Date(Math.min(...cands));
+    return out;
+  }
+  if (w.asleep || !w.wokeAt) return out;
+
+  // The 3 hours count from the morning wake-up — never before 6:00.
+  let S = w.wokeAt;
+  const morning = atToday(c.night.morningWakeEarliest, T);
+  if (S < morning && T >= morning && T - S < 12 * 3600000) S = morning;
+  out.S = S;
+  const cutoff = atToday(c.naps.lastNapCutoff, T);
+  // A nap needs at least minUsefulNap before the cutoff to be worth starting, judged
+  // against NOW too: a refused nap 2 must not keep saying "crib now" at 4 PM.
+  const limit = cutoff.getTime() - c.naps.minUsefulNap * 60000;
+  let nap = S.getTime() + c.ww.target * 60000;
+  if (nap > limit) nap = S.getTime() + c.ww.min * 60000;   // the 2h45 exception, before dropping a nap
+  if (done.length < c.naps.maxCount && Math.max(nap, T.getTime()) <= limit) {
+    out.kind = "nap"; out.napNo = done.length + 1;
+    out.crib = new Date(nap); out.windDown = new Date(nap - COACH.windDownMin * 60000);
+    return out;
+  }
+  const floor = atToday(c.night.bedtimeEarliest, T).getTime();
+  const slotA = atToday(COACH.cribSlotStart, T).getTime();
+  const slotB = atToday(c.night.bedtimeLatest, T).getTime();
+  const plus = S.getTime() + c.ww.target * 60000;
+  const plusMax = S.getTime() + c.ww.lastOfDay * 60000;
+  const crib = out.short
+    ? Math.max(plus, floor)                                                   // short-nap day: earlier, floor 6 PM
+    : Math.max(Math.min(Math.max(plus, slotA), slotB, plusMax), floor);
+  out.kind = "bed";
+  out.crib = new Date(crib);
+  out.routine = new Date(crib - COACH.routineMin * 60000);
+  out.awakeAtCrib = (crib - S.getTime()) / 60000;
+  return out;
+}
+
+// ---- Last night, for the morning review -----------------------------------
+function coachLastNight(t) {
+  const T = t || now();
+  const c = cfgNow();
+  const nss = nightSleepStats(null, c, T);
+  const ns = nss.ns;
+  const bed = tonightsBedtime(T);
+  const to = Math.min(T.getTime(), ns.morningAt.getTime());
+  const feeds = coachFeedSessions(T).filter((f) => f.end > ns.nightStart.getTime() && f.end <= to);
+  return {
+    nss, ns,
+    bedMins: bed && bed.end_at ? Math.max(0, Math.round((new Date(bed.end_at) - new Date(bed.start_at)) / 60000)) : null,
+    rounds: bed ? bedtimeRounds(bed) : null,
+    rescue: !!(bed && isRescue(bed)),
+    feeds: feeds.length, fullFeeds: feeds.filter((f) => f.full).length,
+    streak: bedtimeStreak(),
+  };
+}
+
+// ---- Writes: always through the tracker's own helpers ---------------------
+async function coachWoke() {
+  const s = openSleep();
+  if (s && !isPaused(s)) await pauseSleep();
+}
+async function coachAsleep() {
+  const mode = coachState.flow && coachState.flow.mode;
+  await coachFeedStop();   // a feed left running would make the gate time itself off the routine feed
+  if (openBedtime() && !openSleep()) await finishBedtimeSession();
+  else {
+    const s = openSleep();
+    if (s && isPaused(s)) await resumeSleep();
+    else if (!s) await startSleep(mode === "bed" ? "night" : mode === "nap" ? "nap" : defaultSleepKind());
+  }
+  coachState.flow = null; coachState.view = "now";
+  renderCoach();
+  coachToast(`Asleep at ${clockTime(now())}. Well done.`);
+}
+async function coachFeedStart(side) { if (!openFeed()) await tapBreast(side); }
+async function coachFeedStop() { const f = openFeed(); if (f) { await stopFeed(f); await loadEvents(); } }
+async function coachRescue() { const b = openBedtime() || tonightsBedtime(); if (!b || !isRescue(b)) await toggleRescueNight(); }
+
+// ---- Flow ------------------------------------------------------------------
+function coachStartFlow(mode, step) {
+  const t = now();
+  coachState.flow = { mode, step: null, t0: t.getTime(), stepT0: t.getTime(), holdT0: null, cryT0: null, rounds: 0, from: null };
+  coachState.view = "flow";
+  coachGo(step);
+}
+function coachGo(step) {
+  const f = coachState.flow;
+  if (!f) return;
+  if (step === "gate") {
+    const tb = tonightsBedtime();
+    const g = coachGate();
+    // A declared rescue night: comfort comes first, no gate and no steps.
+    step = tb && isRescue(tb) ? "rescue" : g.known ? (g.open ? "open" : "closed") : "ask";
+  }
+  f.step = step;
+  f.stepT0 = now().getTime();
+  if (step === "L3" && !f.holdT0) f.holdT0 = f.stepT0;
+  if ((/^L[123]$/.test(step) || step === "closed") && !f.cryT0) f.cryT0 = f.stepT0;
+  coachState.sig = "";
+  renderCoach();
+  const body = $("coach");
+  if (body) body.scrollTop = 0;
+}
+
+// ---- Rendering ----------------------------------------------------------------
+function renderCoach() {
+  const host = $("coach-body");
+  if (!host || !coachOpen()) return;
+  const c = cfgNow();
+  const ns = nightState(null, c);
+  const dim = coachLS.get(COACH.dimKey, true);
+  $("coach").classList.toggle("co-night", dim && ns.isNight);
+  document.body.classList.toggle("is-night", ns.isNight);
+  const v = coachState.view;
+  let h = `<div class="co-top">
+      <div><p class="co-eyebrow">Coach</p><h2 class="co-title">${v === "flow" ? coachFlowTitle() : "What do we do now?"}</h2></div>
+      <button class="co-x" data-act="${v === "flow" ? "flow-exit" : "close"}" aria-label="Close">✕</button>
+    </div>`;
+  h += coachPlanBanner();
+  if (v !== "flow") {
+    h += `<nav class="co-tabs" role="tablist">${[["now", "Now"], ["ask", "Ask"], ["rules", "Rules"]].map(([k, l]) =>
+      `<button role="tab" aria-selected="${v === k}" data-act="view:${k}">${l}</button>`).join("")}</nav>`;
+  }
+  if (v === "flow") h += coachFlowHTML();
+  else if (v === "ask") h += coachAskHTML();
+  else if (v === "rules") h += coachRulesHTML();
+  else h += coachNowHTML();
+  host.innerHTML = h;
+  coachState.sig = coachSig();
+  tickCoach();
+  if (v === "ask") { const l = $("co-chat"); if (l) l.scrollTop = l.scrollHeight; }
+}
+
+function coachPlanBanner() {
+  const i = coachPlanInfo();
+  if (!i.p) return `<div class="co-plan"><span class="co-label">7-night plan</span><p>Not started. Set Night 1 in Rules.</p></div>`;
+  const tb = tonightsBedtime();
+  if (tb && isRescue(tb)) return `<div class="co-plan rescue"><span class="co-label">Rescue night</span><p>Comfort came first. Restart the steps within 48 hours. Decide together in the morning.</p></div>`;
+  if (i.p.paused) return `<div class="co-plan"><span class="co-label">Plan paused</span><p>Restart it in Rules, in the morning, together.</p></div>`;
+  if (i.n < 1) return `<div class="co-plan"><span class="co-label">Starts ${coEsc(i.start.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }))}</span><p>Day 1 starts that morning: ${coEsc(plDur(cfgNow().ww.target))} awake, then sleep. Night 1 is that evening.</p></div>`;
+  if (i.n > 7) return `<div class="co-plan"><span class="co-label">7 nights done</span><p>Same rules from here. Look at the week together on Sunday.</p></div>`;
+  if (i.morning) return `<div class="co-plan"><span class="co-label">Morning after night ${i.n} of 7</span><p>Decisions about the plan happen now, before noon, together.${COACH_NIGHTS[i.n + 1] ? " Tonight: " + coEsc(COACH_NIGHTS[i.n + 1]) : ""}</p></div>`;
+  return `<div class="co-plan"><span class="co-label">Night ${i.n} of 7</span><p>${coEsc(COACH_NIGHTS[i.n])}</p></div>`;
+}
+
+const coBtn = (act, label, cls, sub) =>
+  `<button class="co-btn ${cls || ""}" data-act="${act}">${label}${sub ? `<small>${sub}</small>` : ""}</button>`;
+const coRow = (k, v) => `<div><span class="co-label">${k}</span><b>${v}</b></div>`;
+
+function coachNowHTML() {
+  const T = now();
+  const c = cfgNow();
+  const ns = nightState(null, c, T);
+  const w = wakeState(null, c, T);
+  const s = w.asleep;
+  const paused = isPaused(s);
+  const bed = openBedtime();
+  const tb = tonightsBedtime(T);
+  const rows = [], alerts = [];
+  let acts = "";
+
+  const evening = ns.isNight && !s && !bed && !ns.logged && minOfDay(T) >= 12 * 60;
+  if (evening) {
+    const d = coachDay(T);
+    if (d.kind === "bed") {
+      rows.push(coRow("Awake since", clockTime(d.S)));
+      rows.push(coRow("Routine", clockTime(d.routine)));
+      rows.push(coRow("Crib by", clockTime(d.crib)));
+      if (T >= d.crib) alerts.push(["red", "Crib now, awake."]);
+      else if (T >= d.routine) alerts.push(["clay", "Start the routine now: feed, pajamas, massage, white noise, crib awake."]);
+    }
+    acts += coBtn("flow:bed", "🌙 Bedtime routine", "sleep", "step by step");
+    acts += coBtn("asleep", "😴 He's asleep", "ghost");
+  } else if (ns.isNight) {
+    const g = coachGate(T);
+    if (paused) rows.push(coRow("Awake since", clockTime(new Date(sleepPauses(s).open))));
+    else if (s) rows.push(coRow("Asleep since", clockTime(nightSleepStats(null, c, T).currentStart || new Date(s.start_at))));
+    rows.push(coRow("Feed gate", g.known ? (g.open ? "Open" : `Opens ${clockTime(g.opens)}`) : "No full feed logged tonight"));
+    if (g.known) rows.push(coRow("Last full feed", clockTime(g.last)));
+    rows.push(coRow("Morning", clockTime(ns.morningAt)));
+    if (bed && !s) {
+      acts += coBtn("bed-protest", "😢 Protesting in the crib", "cry", "the steps");
+      acts += coBtn("asleep", "😴 He's asleep", "sleep");
+    } else if (s && !paused && tb && isRescue(tb)) {
+      acts += coBtn("night-woke", "🌙 He woke up", "cry", "rescue night: comfort him");
+    } else if (s && !paused) {
+      acts += coBtn("night-woke", "🌙 He woke up", "cry", "what now?");
+      acts += coBtn("night-woke", "😢 He's crying", "ghost", "what next?");
+    } else if (paused) {
+      acts += coBtn("flow:night", "What now?", "cry", "step by step for this wake");
+      acts += coBtn("asleep", "😴 He's asleep", "sleep");
+    } else if (ns.logged) {
+      acts += coBtn("flow:night", "😢 He's crying", "cry", "what next?");
+      acts += coBtn("asleep", "😴 He's asleep", "sleep");
+    } else if (minOfDay(T) < 720) {
+      // After midnight with nothing logged: still a night wake, never "bedtime routine".
+      acts += coBtn("flow:night", "😢 He's crying", "cry", "what next?");
+      acts += coBtn("asleep", "😴 He's asleep", "sleep");
+    } else {
+      acts += coBtn("flow:bed", "🌙 Bedtime routine", "sleep", `crib by ${clockTime(coachBedCrib(T))}`);
+      acts += coBtn("asleep", "😴 He's asleep", "ghost");
+    }
+  } else if (s && isNightRow(s)) {
+    rows.push(coRow(paused ? "Awake since" : "Asleep since", clockTime(paused ? new Date(sleepPauses(s).open) : (nightSleepStats(null, c, T).currentStart || new Date(s.start_at)))));
+    rows.push(coRow("Night started", clockTime(new Date(s.start_at))));
+    acts += coBtn("up", "☀️ He's up for the day", "sleep wide");
+    if (paused) acts += coBtn("asleep", "😴 Back asleep", "ghost wide");
+  } else {
+    const d = coachDay(T);
+    if (d.kind === "napping") {
+      rows.push(coRow(`Nap ${d.napNo} since`, clockTime(d.start)));
+      rows.push(coRow("Wake him by", clockTime(d.wakeBy)));
+      rows.push(coRow("Day sleep", plDur(d.st.napMins)));
+      if (T >= d.wakeBy) alerts.push(["red", "Wake him now. This nap has reached its limit."]);
+      else if (minOfDay(T) >= hhmmToMin(c.naps.lastNapCutoff) - 15) alerts.push(["red", `Wake Leo by ${clockTime(atToday(c.naps.lastNapCutoff, T))}. Late naps steal bedtime pressure.`]);
+      if (paused) acts += coBtn("asleep", "▶ Back asleep", "sleep") + coBtn("nap-end", "He's up", "ghost");
+      else acts += coBtn("nap-end", "He woke up", "sleep", "end the nap") + coBtn("nap-stir", "😢 Crying mid-nap", "cry", "the steps");
+    } else if (d.kind === "nap") {
+      rows.push(coRow("Awake since", clockTime(d.S)));
+      rows.push(coRow("Wind down", clockTime(d.windDown)));
+      rows.push(coRow("Crib by", clockTime(d.crib)));
+      rows.push(coRow("Nap", `${d.napNo} of ${c.naps.maxCount}`));
+      if (T >= d.crib) alerts.push(["red", "Window is up. Crib now, awake."]);
+      else if (T >= d.windDown) alerts.push(["clay", "Wind down now: curtains, sleep sack, white noise, 30-second hold."]);
+      acts += coBtn("flow:nap", "😴 Nap time", "sleep", "step by step");
+      acts += coBtn("nap-protest", "😢 Crying in the crib", "cry", "the steps");
+      acts += coBtn("asleep", "He's asleep", "ghost");
+      acts += coBtn("tired", "👀 Tired early?", "ghost");
+    } else if (d.kind === "bed") {
+      rows.push(coRow("Awake since", clockTime(d.S)));
+      rows.push(coRow("Routine", clockTime(d.routine)));
+      rows.push(coRow("Crib by", clockTime(d.crib)));
+      if (d.short) alerts.push(["gold", `Short naps today. Bedtime comes earlier tonight: ${clockTime(d.crib)}. Never a third nap.`]);
+      if (d.napsDone < c.naps.maxCount) alerts.push(["gold", `Only ${d.napsDone} nap${d.napsDone === 1 ? "" : "s"} today. Bedtime comes earlier, never before ${clockTime(atToday(c.night.bedtimeEarliest, T))}.`]);
+      else if (d.awakeAtCrib > c.ww.lastOfDay) alerts.push(["gold", `That's a long stretch (${plDur(Math.round(d.awakeAtCrib))}). Keep him busy and outside. Never a third nap.`]);
+      if (T >= d.crib) alerts.push(["red", "Crib now, awake."]);
+      else if (T >= d.routine) alerts.push(["clay", "Start the routine now: feed, pajamas, massage, white noise, crib awake."]);
+      acts += coBtn("flow:bed", "🌙 Bedtime routine", "sleep", "step by step");
+      acts += coBtn("tired", "👀 Tired early?", "ghost");
+    } else {
+      rows.push(coRow("Today", "Log when he wakes up"));
+    }
+  }
+  acts += coBtn("teeth", "🦷 Teething", "ghost") + coBtn("view:ask", "💬 Ask the coach", "ghost");
+
+  let h = `<div class="co-card co-times">${rows.join("")}</div>`;
+  if (alerts.length) h += `<div class="co-alerts">${alerts.map(([k, t]) => `<div class="co-al ${k}">${coEsc(t)}</div>`).join("")}</div>`;
+  if (coachState.confirmUp) {
+    h += `<div class="co-card"><p class="co-do">Up for the day? This ends the night at ${clockTime(T)}.</p>
+      <div class="co-grid">${coBtn("up-yes", "✓ Yes, he's up", "sleep")}${coBtn("up-no", "✕ Not yet", "ghost")}</div></div>`;
+  }
+  h += `<div class="co-grid">${acts}</div>`;
+
+  const i = coachPlanInfo(T);
+  if (i.morning) h += coachMorningHTML();
+  if (!i.p || i.n == null || i.n <= 1) {
+    h += `<details class="co-card co-det"><summary>Safe crib check, before night 1</summary><ul>${COACH_SAFE.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></details>`;
+  }
+  return h;
+}
+
+// Tonight's crib time when nothing is logged yet (evening, before bedtime).
+function coachBedCrib(T) {
+  const d = coachDay(T);
+  return d.kind === "bed" ? d.crib : atToday(COACH.cribSlotStart, T);
+}
+
+function coachMorningHTML() {
+  const L = coachLastNight();
+  const n = L.nss;
+  const parts = [
+    L.bedMins != null ? coRow("Crib to asleep", `${L.bedMins} min${L.rounds ? ` · ${L.rounds} round${L.rounds === 1 ? "" : "s"}` : ""}`) : "",
+    coRow("Wakes", String(n.wakes)),
+    coRow("Night feeds", `${L.feeds}${L.feeds ? ` (${L.fullFeeds} full)` : ""}`),
+    coRow("Longest stretch", plDur(n.longestMin)),
+    coRow("Bedtime streak", `${L.streak} of ${GATE_NIGHTS} under ${GATE_MINS} min`),
+  ].join("");
+  return `<div class="co-card co-morning"><h3>Last night${L.rescue ? " · rescue night" : ""}</h3><div class="co-times">${parts}</div>
+    ${coBtn("review", "Review last night with the coach", "ghost wide", "one pattern, one thing to watch tonight")}</div>`;
+}
+
+function coachFlowTitle() {
+  const f = coachState.flow;
+  if (!f) return "";
+  return { night: "Night wake", nap: "Nap", bed: "Bedtime", info: "Coach" }[f.mode] || "Coach";
+}
+
+function coachFlowHTML() {
+  const f = coachState.flow;
+  if (!f) return "";
+  const T = now();
+  const c = cfgNow();
+  const g = coachGate(T);
+  const ladder = /^L[123]$/.test(f.step);
+  let h = f.mode === "info" ? `<div class="co-timers">` : `<div class="co-timers"><span>Started <b>${clockTime(new Date(f.t0))}</b></span>`;
+  if (f.cryT0 && (ladder || ["closed", "pain"].includes(f.step))) h += `<span>Crying <b data-since="${f.cryT0}">0:00</b></span>`;
+  if (f.step === "L3" && f.holdT0) h += `<span>Holding <b data-since="${f.holdT0}">0:00</b></span>`;
+  if (f.rounds) h += `<span>Round <b>${f.rounds + 1}</b></span>`;
+  if (f.mode === "nap" && (ladder || f.step === "napcrib")) h += `<span>Rescue nap at <b>${clockTime(new Date(f.t0 + COACH.rescueNapMin * 60000))}</b>${f.from === "protest" ? " (30 min from the first cry)" : ""}</span>`;
+  h += `</div>`;
+  h += `<div class="co-step">${coachStepHTML(f, g, c, T)}</div>`;
+
+  // The gate opened while on the steps: never switch to the breast mid-cry.
+  if (f.mode === "night" && ladder && g.known && g.open && g.last.getTime() < f.t0 + 60000) {
+    h += `<div class="co-al gold">It's now ${plDur(c.night.feedGateMin)}+ since his last full feed. Keep going with the steps until he's asleep: no feed on this wake. If he falls asleep and wakes up later, that new wake is a feed.</div>`;
+  }
+  if (f.mode === "nap" && ladder && T >= atToday(c.naps.lastNapCutoff, T)) {
+    h += `<div class="co-al red">It's past ${clockTime(atToday(c.naps.lastNapCutoff, T))}. No more nap today: get him up. Bedtime comes earlier.</div>`;
+  } else if (f.mode === "nap" && ladder && T.getTime() - f.t0 >= COACH.rescueNapMin * 60000) {
+    h += `<div class="co-grid">${coBtn("go:rescueNap", `${COACH.rescueNapMin} minutes up → rescue nap`, "gold wide")}</div>`;
+  }
+  if (ladder || f.step === "closed") {
+    h += `<div class="co-grid">${f.step !== "L3" ? coBtn("go:L3", "Panic scream → step 3", "ghost") : ""}${coBtn("go:pain", "Pain signs?", "ghost" + (f.step === "L3" ? " wide" : ""))}</div>`;
+  }
+  if (f.step === "L3" || f.step === "pain" || f.step === "rescue") h += `<p class="co-limit">${coEsc(COACH_LIMIT)}</p>`;
+  h += `<div class="co-grid">${coBtn("flow-exit", "← Back to Coach", "ghost wide")}</div>`;
+  return h;
+}
+
+const coLadder = (n) => `<div class="co-ladder">${["Wait", "Hand + shhh", "Hold still"].map((l, i) =>
+  `<span class="${i + 1 === n ? "on" : ""}">${l}</span>`).join("")}</div>`;
+const coSay = (text) => `<button class="co-say" data-act="say" data-say="${coEsc(text)}" aria-label="Read aloud">🔊</button>`;
+
+function coachStepHTML(f, g, c, T) {
+  const gate = plDur(c.night.feedGateMin);
+  const step = (label, title, doText, more, btns, sayText) =>
+    `<div class="co-stephead"><span class="co-label">${label}</span>${coSay(sayText || title + ". " + doText)}</div>
+     <h3>${title}</h3><p class="co-do">${doText}</p>${more || ""}<div class="co-stepbtns">${btns}</div>`;
+  const noSleepLogged = f.mode === "night" && !openSleep() && !openBedtime()
+    ? `<p class="co-note">No night sleep is logged, so this wake isn't counted in the tracker.</p>` : "";
+
+  switch (f.step) {
+    case "early":
+      return step("Before 6:00 AM", "Still night",
+        "Keep it dark and boring. No lights, no talking, no getting up for the day.",
+        `<p>Morning starts at ${clockTime(atToday(c.night.morningWakeEarliest))}. Until then this is a night wake.</p>`,
+        coBtn("go:gate", "Next: the feed gate", "sleep"));
+    case "ask":
+      return step("Feed gate", "When did he last have a full feed?",
+        `A full feed is ${c.feeds.fullMin}+ minutes at the breast, both sides together.`,
+        `<p class="co-note">No full feed is logged since tonight's routine. Log tonight's feeds so the gate can time itself.</p>${noSleepLogged}`,
+        coBtn("go:open", `${gate} ago or more`, "gold") + coBtn("go:closed", `Less than ${gate} ago`, "ghost"));
+    case "open":
+      return step("Feed gate · open", "Emma feeds",
+        "Sitting up, not lying in bed, not on a sofa. Lights low, no talking. Then into the crib awake, on his back.",
+        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+         <p class="co-who">${minOfDay(T) < 120 || minOfDay(T) >= 18 * 60 ? "Emma is asleep in the other room until 2 AM: Mike wakes her. " : ""}If she feels herself dozing, he goes into the crib.</p>
+         <p class="co-note">1–2 night feeds are normal at this age. This is not night-weaning.</p>${noSleepLogged}`,
+        coBtn("feed:left", "Feeding · left", "gold") + coBtn("feed:right", "Feeding · right", "gold") + coBtn("asleep", "He settled on his own", "ghost wide"));
+    case "feeding": {
+      const fe = openFeed();
+      return step("Feeding", "Feed first, then the crib",
+        "When he's done: into the crib awake, on his back. Drowsy is fine.",
+        fe ? `<p>Feeding since <b>${clockTime(new Date(fe.start_at))}</b> · <b data-since="${new Date(fe.start_at).getTime()}">0:00</b></p>` : "",
+        (fe ? coBtn("feed-stop", "Feed done → in the crib", "sleep") : coBtn("go:aftfeed", "In the crib", "sleep")));
+    }
+    case "aftfeed":
+      return step("After the feed", "In the crib, awake",
+        "If he protests, Mike takes over with the steps. Emma goes back to bed.",
+        "", coBtn("asleep", "😴 He's asleep", "sleep") + coBtn("go:L1", "Protesting → step 1", "cry"));
+    case "closed":
+      return step("Feed gate · closed", g.known ? `Opens at ${clockTime(g.opens)}` : "Not hunger",
+        "This wake isn't hunger. Mike goes in. Emma stays out of the room: if he smells milk, he keeps asking for it.",
+        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+         <div class="co-dont">Never end the steps with a feed.</div>${noSleepLogged}`,
+        coBtn("go:L1", "Start the steps", "cry"));
+    case "L1":
+      return step("Step 1 of 3", "Wait out of sight",
+        `Give him ${COACH.waitMin} minutes. Fussing often stops on its own.`,
+        `${coLadder(1)}<div class="co-count" data-until="${f.stepT0 + COACH.waitMin * 60000}">${COACH.waitMin}:00</div>`,
+        coBtn("asleep", "He settled", "sleep") + coBtn("go:L2", "Real crying → step 2", "cry"));
+    case "L2":
+      return step("Step 2 of 3", "Hand and voice",
+        "Hand on his chest. Slow \"shhh\". Pacifier. He stays in the crib.",
+        `${coLadder(2)}<div class="co-dont">Don't pick him up yet. Don't feed. No ball.</div>`,
+        coBtn("asleep", "He settled", "sleep") + coBtn("go:L3", "Escalating → step 3", "cry"));
+    case "L3": {
+      const held = f.holdT0 ? T.getTime() - f.holdT0 : 0;
+      return step("Step 3 of 3", "Hold him still",
+        "Pick him up. Still arms: no bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.",
+        `${coLadder(3)}<p class="co-who">White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.</p>
+         <p>Stand, or sit on a hard upright chair. No time limit. If he dozes off in your arms, put him in the crib anyway, then step 1.</p>
+         ${held >= COACH.painCheckMin * 60000 ? `<div class="co-al red">${COACH.painCheckMin}+ minutes in arms without calming. Check: pain or protest?</div>` : ""}`,
+        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"),
+        "Hold him still. White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still. No bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.");
+    }
+    case "pain":
+      return step("Pain or protest?", "Does he calm in your arms?",
+        "Yes, and he's otherwise well → protest. Keep going with the steps.",
+        `<p>Arching at Mike that stops when Emma walks in is protest, not pain.</p>
+         <p><b>Pain looks like:</b> inconsolable in anyone's arms for 20–30 minutes, arching, legs pulled up, worse lying flat → rescue night.</p>
+         <div class="co-dont"><b>${coEsc(COACH_911)}</b><br><br><b>Go to a doctor or ER now for:</b><ul>${COACH_RED.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></div>`,
+        coBtn("go:L3", "He calms → protest, continue", "sleep") + coBtn("rescue", f.mode === "nap" ? "Comfort him fully" : "Rescue night", "cry"),
+        "Does he calm in your arms? If yes, and he's otherwise well, keep going with the steps. If he stays inconsolable for 20 to 30 minutes, arching or pulling his legs up, it's a rescue night. Screaming in waves with quiet gaps, vomiting, or blood or jelly in the diaper: go to a doctor or the E R now. Struggling to breathe, blue lips, a seizure, or you can't wake him: call 9 1 1.");
+    case "rescue":
+      return step("Rescue", "Comfort him fully",
+        `Say it out loud: "This is a rescue ${f.mode === "nap" ? "nap" : "night"}." Then whatever works: arms, feeding, rocking.`,
+        `<p class="co-who">Sitting up, never on a sofa or armchair. If you start dozing, he goes into the crib on his back.</p>
+         <p>This is part of the plan, not a failure. If nothing calms him for 2 hours, or any red flag shows up, call now. If you called it pain, message your pediatrician in the morning.</p>
+         <p>Restart the steps within 48 hours. Pausing the plan is decided together, in the morning.</p>`,
+        coBtn("asleep", "😴 He's asleep", "sleep"));
+    case "routine": {
+      const fe = openFeed();
+      const crib = coachBedCrib(T);
+      return step("Bedtime routine", `Crib by ${clockTime(crib)}`,
+        "Feed → pajamas → massage → white noise → crib awake, on his back.",
+        `<p>The feed is the first step, never the last. No bath. Mike puts him down. Crib when you see the green zone: slow blinks, heavy body, faraway gaze.</p>
+         ${fe ? `<p>Feeding since <b>${clockTime(new Date(fe.start_at))}</b> · <b data-since="${new Date(fe.start_at).getTime()}">0:00</b></p>` : ""}`,
+        (fe ? coBtn("feed-stop-stay", "Feed done", "gold")
+            : coBtn("feed-stay:left", "Bedtime feed · left", "gold") + coBtn("feed-stay:right", "Bedtime feed · right", "gold"))
+        + coBtn("crib", "🌙 In the crib now", "sleep wide"));
+    }
+    case "settling":
+      return step("In the crib", "Mike steps out",
+        "Awake, on his back. Give him the chance to settle.", "",
+        coBtn("asleep", "😴 He's asleep", "sleep") + coBtn("go:L1", "Protesting → step 1", "cry"));
+    case "naproutine":
+      return step("Nap", "Mini routine",
+        "Curtains, sleep sack, white noise, a 30-second hold. Calm in still arms, not asleep, no ball. Then crib awake, on his back.",
+        `<p>Whoever starts the nap finishes it: same routine, same steps. Rescue nap at ${clockTime(new Date(f.t0 + COACH.rescueNapMin * 60000))}.</p>`,
+        coBtn("go:napcrib", "In the crib now", "sleep"));
+    case "napcrib":
+      return step("Nap", "In the crib, awake", "Step out. Give him the chance to settle.", "",
+        coBtn("asleep", "😴 He's asleep", "sleep") + coBtn("go:L1", "Protesting → step 1", "cry"));
+    case "rescueNap":
+      return step(`${COACH.rescueNapMin} minutes`, "Rescue the nap",
+        "Let him sleep wherever it happens: carrier, arms, or a car ride. An awake adult watches him.",
+        `<p>Carrier: face visible, chin off his chest. When the drive ends, out of the car seat: if he's still asleep, he goes into the crib on his back. If you can't keep watching him, crib on his back.</p>
+         <div class="co-dont">Never bounce him to sleep and then transfer him. That rebuilds the old habit.</div>
+         <p class="co-note">Moving a sleeping baby to the crib for safety is always fine.</p>`,
+        coBtn("asleep", "😴 He's asleep", "sleep"));
+    case "teeth":
+      return step("Teething", "Worst 2–3 nights only",
+        "Infant ibuprofen about 30 minutes before the routine. Measure only with the box's syringe.",
+        `<p>Before the first dose, have a pharmacist or your pediatrician write on the box the mL for his weight, for that exact bottle. Infant drops and children's liquid are different strengths. Never more often than every 6–8 hours. Skip it and call if he isn't drinking, is vomiting or has diarrhea.</p>
+         <div class="co-dont">Fever of 38 °C or more = he's sick, not teething: rescue night, no steps.</div>
+         <p>Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → it isn't the tooth, keep going.</p>`, "",
+        "Teething, worst two or three nights only. Infant ibuprofen about 30 minutes before the routine, only the millilitres the pharmacist wrote on the box for his weight, measured with the box's syringe, never more often than every 6 to 8 hours. Fever of 38 or more means he's sick, not teething: rescue night.");
+    case "tired":
+      return step("Tired early", "Change the scene first",
+        "Outside, light, a new toy, for 5 minutes.",
+        `<p>Still tired after that → crib at ${plDur(c.ww.min)}, the only exception to ${plDur(c.ww.target)}. Never earlier. Three days in a row → shorten the window together at the Sunday review.</p>`, "");
+    case "morning": {
+      const crib = new Date(Math.max(T.getTime(), atToday(c.night.morningWakeEarliest, T).getTime()) + c.ww.target * 60000);
+      return step("Good morning", "Lights on, big hello",
+        `First nap: crib by ${clockTime(crib)}.`, "", "");
+    }
+  }
+  return "";
+}
+
+function coachAskHTML() {
+  const speak = coachLS.get(COACH.speakKey, true);
+  const msgs = coachState.chat.map((m) =>
+    `<div class="co-msg ${m.role === "user" ? "me" : "ai"}">${coEsc(m.content)}</div>`).join("");
+  return `<p class="co-note">Say what's happening: tap the box, then the mic on your keyboard. The coach knows the plan, the time and the last 30 hours of the log.</p>
+    <div class="co-chips">${["He's been crying 20 min in my arms and arching", "He woke 40 minutes after a feed", "Can we skip the plan tonight?", "He seems to be teething"]
+      .map((q) => `<button data-act="chip" data-q="${coEsc(q)}">${coEsc(q)}</button>`).join("")}</div>
+    <div id="co-chat" class="co-chat">${msgs}${coachState.busy ? `<div class="co-msg ai co-typing">Thinking…</div>` : ""}</div>
+    <form id="co-ask" class="co-ask">
+      <textarea id="co-q" rows="3" placeholder="He woke at 2:10, crying hard, fed at 11:30…"></textarea>
+      <div class="co-askrow">
+        <button class="co-btn sleep" type="submit" ${coachState.busy ? "disabled" : ""}>Ask</button>
+      </div>
+      <label class="co-toggle"><input type="checkbox" id="co-speak" ${speak ? "checked" : ""}> 🔊 Read answers aloud. Silent Mode off (or an earbud), screen on until it answers.</label>
+      ${coachState.chat.length ? `<button class="co-link" type="button" data-act="chat-clear">${coachState.clearArmed ? "Tap again to clear the conversation" : "Clear this conversation"}</button>` : ""}
+    </form>`;
+}
+
+function coachRulesHTML() {
+  const i = coachPlanInfo();
+  const morning = i.morning;
+  const p = i.p || {};
+  const dim = coachLS.get(COACH.dimKey, true);
+  let h = `<div class="co-card"><h3>The 7-night plan</h3>
+    <label class="co-label" for="co-start">Night 1 is the evening of</label>
+    <input id="co-start" class="co-input" type="date" value="${coEsc(p.startDate || "")}" ${i.p && i.n >= 1 && !morning ? "disabled" : ""}>
+    ${i.p ? coBtn(p.paused ? "plan-restart" : "plan-pause", p.paused ? "Restart: Night 1 is tonight" : "Pause the plan", "ghost wide" + (morning ? "" : " co-off")) : ""}
+    <p class="co-note">${morning ? "You're inside the morning window (6 AM–noon). Decide this together." : "Pausing or restarting only works 6 AM–noon. Decide in the morning, never at night."}</p>
+    <label class="co-toggle"><input type="checkbox" id="co-dim" ${dim ? "checked" : ""}> Dim the Coach at night</label></div>`;
+  h += `<details class="co-card co-det" open><summary>Safe crib check</summary><ul>${COACH_SAFE.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></details>`;
+  h += `<details class="co-card co-det" open><summary>Red flags: get help now</summary><p class="co-red"><b>${coEsc(COACH_911)}</b></p><p>Go to a doctor or ER now for:</p><ul>${COACH_RED.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul><p>${coEsc(COACH_LIMIT)}</p></details>`;
+  h += coachRules().map((s, k) => `<details class="co-card co-det"${k < 4 ? " open" : ""}><summary>${coEsc(s.h)}</summary><ul>${s.items.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></details>`).join("");
+  h += `<details class="co-card co-det"><summary>The 7 nights</summary><ol>${Object.keys(COACH_NIGHTS).map((k) => `<li>${coEsc(COACH_NIGHTS[k])}</li>`).join("")}</ol></details>`;
+  return h;
+}
+
+// ---- Per-second tick: text only. Rebuild only when a threshold flips. -----
+function coachSig() {
+  const T = now();
+  const f = coachState.flow;
+  const ns = nightState(null, null, T);
+  const parts = [coachState.view, ns.isNight, coachPlanInfo(T).morning];
+  if (f) {
+    const g = coachGate(T);
+    parts.push(f.step, g.known && g.open,
+      f.holdT0 ? T.getTime() - f.holdT0 >= COACH.painCheckMin * 60000 : false,
+      f.mode === "nap" ? T.getTime() - f.t0 >= COACH.rescueNapMin * 60000 : false);
+  } else if (coachState.view === "now") {
+    const d = ns.isNight && (openSleep() || openBedtime() || ns.logged) ? null : coachDay(T);
+    const g = ns.isNight ? coachGate(T) : null;
+    parts.push(d && d.kind, d && d.crib && T >= d.crib, d && d.windDown && T >= d.windDown,
+      d && d.routine && T >= d.routine, d && d.wakeBy && T >= d.wakeBy,
+      minOfDay(T) >= hhmmToMin(cfgNow().naps.lastNapCutoff) - 15, g && g.known && g.open);
+  }
+  return parts.join("|");
+}
+function tickCoach() {
+  if (!coachOpen()) return;
+  const T = now().getTime();
+  document.querySelectorAll("#coach [data-since]").forEach((el) => { el.textContent = mmss(T - Number(el.dataset.since)); });
+  document.querySelectorAll("#coach [data-until]").forEach((el) => {
+    const left = Number(el.dataset.until) - T;
+    el.textContent = left > 0 ? mmss(left) : "Time";
+  });
+  // Ask view is never rebuilt by the clock: it would wipe a half-typed question.
+  if (coachState.view !== "ask" && coachSig() !== coachState.sig) renderCoach();
+}
+
+let _coachToastT = null;
+function coachToast(msg) {
+  const t = $("coach-toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(_coachToastT);
+  _coachToastT = setTimeout(() => t.classList.add("hidden"), 4500);
+}
+
+function openCoach(view) {
+  $("coach").classList.remove("hidden");
+  document.body.classList.add("coach-on");
+  coachState.view = view || (coachState.flow ? "flow" : "now");
+  renderCoach();
+}
+function closeCoach() {
+  $("coach").classList.add("hidden");
+  document.body.classList.remove("coach-on");
+  coachState.flow = null;
+  coachState.confirmUp = false;
+  coachState.view = "now";
+  try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
+}
+
+// ---- Voice out: the phone's own voice. iOS only lets a page speak after a tap,
+// so the first speak() happens synchronously inside the tap, before any await. ---
+function coachSpeakUnlock() {
+  try {
+    if (!coachLS.get(COACH.speakKey, true) || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+  } catch (e) {}
+}
+function coachSpeak(text, force) {
+  try {
+    if ((!force && !coachLS.get(COACH.speakKey, true)) || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const t = String(text).replace(/[*_#`>]/g, "");
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang = /[¿¡ñáéíóú]|\b(que|está|bebé|despert|llor|cuna|dormid)/i.test(t) ? "es-MX" : "en-US";
+    u.rate = 0.95;
+    window.speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+// ---- The AI: the existing ask-leo function, with the plan as system context ---
+function coachLogText(T) {
+  const from = T.getTime() - 30 * 3600000;
+  const rows = events.filter((e) => new Date(e.start_at).getTime() >= from || (e.end_at == null && e.type === "sleep"))
+    .slice().sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+  const day = (d) => d.toLocaleDateString([], { weekday: "short" });
+  const t = (iso) => `${day(new Date(iso))} ${clockTime(new Date(iso))}`;
+  const lines = [];
+  for (const e of rows) {
+    if (e.type === "sleep") {
+      const p = sleepPauses(e);
+      const wakes = p.done.filter(([a, b]) => new Date(b) > new Date(a)).map(([a, b]) => `woke ${clockTime(new Date(a))}–${clockTime(new Date(b))}`);
+      if (p.open) wakes.push(`awake since ${clockTime(new Date(p.open))}`);
+      lines.push(`${t(e.start_at)} ${isNightRow(e) ? "night sleep" : "nap"} → ${e.end_at ? clockTime(new Date(e.end_at)) : "ongoing"}${wakes.length ? " (" + wakes.join("; ") + ")" : ""}`);
+    } else if (e.type === "breast") {
+      lines.push(`${t(e.start_at)} breast ${e.subtype || ""} ${e.end_at ? plDur(Math.round((new Date(e.end_at) - new Date(e.start_at)) / 60000)) : "ongoing"}`);
+    } else if (e.type === "bottle") {
+      lines.push(`${t(e.start_at)} bottle ${e.amount_ml || 0} ml`);
+    } else if (e.type === "bedtime") {
+      lines.push(`${t(e.start_at)} into the crib for bedtime${e.end_at ? `, asleep ${clockTime(new Date(e.end_at))}` : ", settling"} (${e.note || ""})`);
+    }
+  }
+  return lines.join("\n") || "(nothing logged)";
+}
+function coachBrief() {
+  const T = now();
+  const c = cfgNow();
+  const ns = nightState(null, c, T);
+  const g = coachGate(T);
+  const i = coachPlanInfo(T);
+  const d = ns.isNight ? null : coachDay(T);
+  const f = coachState.flow;
+  const tbR = tonightsBedtime(T);
+  const rules = coachRules().map((s) => s.h.toUpperCase() + "\n" + s.items.map((x) => "- " + x).join("\n")).join("\n\n");
+  return `COACH MODE. You are the sleep coach for Leo (born 23 Jan 2026), used by his parents Mike and Emma, and his nanny Gloria in the mornings, often in the middle of the night and exhausted. They are running the 7-night plan below. These coach rules override any earlier background about rocking, transferring him asleep or avoiding feeding schedules.
+
+How to answer:
+- First line: the single next thing to do, in plain words, under 15 words.
+- Then at most 4 short lines of how or why. No headings. Under 120 words in total.
+- Reply in the language of the question (English or Spanish).
+- Stick to the plan. Never suggest bouncing, the ball, feeding to sleep or feeding in bed, except when NOW says "Rescue night: YES" (then feeding and rocking are fine, but never asleep together on a sofa or armchair). A rescue night is for pain or illness signs; a parent saying it in chat because the crying is long is not one: give the pain check.
+- At night only (bedtime to 6 AM): a feed only if ${plDur(c.night.feedGateMin)}+ since the last FULL feed. Gate closed → the steps. Never end the steps with a feed. Daytime feeds are not gated.
+- Protest vs pain: calms in arms = protest. Inconsolable in arms 20–30 min with arching or legs pulled up = pain → rescue night. Screaming in waves with quiet gaps, vomiting, blood or jelly in the diaper → doctor or ER now.
+- Red flags: give them plainly and tell them to get help now (911 for breathing trouble, blue or grey skin, a seizure, or can't wake him).
+- Never give medication doses (mg or mL). For teething ibuprofen: infant ibuprofen, the mL a pharmacist or pediatrician wrote on the box for his weight, no more often than every 6–8 h. Fever of 38 °C or more is illness, not teething.
+- Stopping or changing the plan is decided in the morning (6 AM–noon), together. At night say so kindly and give the step.
+- In the morning review: one pattern from the log with its numbers, and one thing to watch tonight. Rule changes wait for the Sunday review.
+- At most one short warm clause. No lectures.
+
+THE PLAN
+${rules}
+
+RED FLAGS
+${COACH_911}
+Doctor or ER now: ${COACH_RED.join("; ")}.
+
+NOW
+Time: ${T.toLocaleString()}.
+${ns.isNight ? "It is night." : `It is day. ${d && d.kind === "nap" ? `Next nap: crib by ${clockTime(d.crib)}.` : d && d.kind === "bed" ? `Bedtime: routine ${clockTime(d.routine)}, crib by ${clockTime(d.crib)}.` : d && d.kind === "napping" ? `Napping since ${clockTime(d.start)}, wake him by ${clockTime(d.wakeBy)}.` : ""}`}
+${ns.isNight ? `Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}, last full feed ${clockTime(g.last)}` : "no full feed logged since tonight's routine"}.` : "Feed gate: not used during the day."}
+Rescue night: ${tbR && isRescue(tbR) ? "YES, declared in the app tonight" : "no"}.
+Plan: ${!i.p ? "not started" : i.p.paused ? "paused" : i.n < 1 ? "starts " + i.p.startDate : i.n > 7 ? "7 nights done" : "night " + i.n + " of 7"}.${f ? `\nThey are in the step-by-step: ${f.mode}, step ${f.step}${f.cryT0 ? `, crying for ${plDur(Math.round((T.getTime() - f.cryT0) / 60000))}` : ""}.` : ""}
+
+LOG, last 30 hours
+${coachLogText(T)}`;
+}
+
+async function coachAsk(question) {
+  const q = String(question || "").trim();
+  if (!q || coachState.busy) return;
+  coachSpeakUnlock();                       // inside the tap, before any await
+  coachState.chat.push({ role: "user", content: q });
+  coachState.busy = true;
+  coachState.view = "ask";
+  renderCoach();
+  // A clean user/assistant alternation that starts and ends on the user.
+  const hist = [];
+  for (const m of coachState.chat.slice(-9)) {
+    const last = hist[hist.length - 1];
+    if (last && last.role === m.role) last.content += "\n\n" + m.content;
+    else hist.push({ role: m.role, content: m.content });
+  }
+  while (hist.length && hist[0].role !== "user") hist.shift();
+  hist[hist.length - 1] = { role: "user", content: `(${now().toLocaleString()})\n${hist[hist.length - 1].content}` };
+  let reply = null;
+  try {
+    const { data, error } = await sb.functions.invoke("ask-leo", {
+      body: { mode: "coach", messages: hist, activity: coachBrief(), ...aiContext() },
+    });
+    if (!error && data && !data.error && data.reply) reply = String(data.reply).trim();
+  } catch (e) {}
+  coachState.busy = false;
+  if (reply) {
+    coachState.chat.push({ role: "assistant", content: reply });
+    if (coachOpen()) coachSpeak(reply);
+  } else {
+    coachState.chat.push({ role: "assistant", content: "I couldn't reach the coach. Use the steps on the Now screen, and try again in a minute." });
+  }
+  coachState.chat = coachState.chat.slice(-20);
+  coachLS.set(COACH.chatKey, coachState.chat);
+  if (coachOpen() && coachState.view === "ask") coachRenderChat();
+  else if (coachOpen()) renderCoach();
+}
+
+function coachReview() {
+  const L = coachLastNight();
+  const n = L.nss;
+  coachAsk(`Morning review of last night. Crib to asleep: ${L.bedMins == null ? "not logged" : L.bedMins + " min, " + L.rounds + " round(s)"}${L.rescue ? ", rescue night" : ""}. Wakes: ${n.wakes}. Night feeds: ${L.feeds} (${L.fullFeeds} full). Longest stretch: ${plDur(n.longestMin)}. Bedtime streak: ${L.streak} of ${GATE_NIGHTS} under ${GATE_MINS} min. Give one pattern from the log with its numbers, and one thing to watch tonight.`);
+}
+
+// ---- Events (delegated: the body is rebuilt, the listeners never are) ------
+let coachWriting = false;
+async function onCoachClick(e) {
+  const b = e.target.closest("[data-act]");
+  if (!b || !$("coach").contains(b)) return;
+  const act = b.dataset.act;
+  const [verb, arg] = act.split(":");
+  const f = coachState.flow;
+  if (verb === "close") return closeCoach();
+  if (verb === "flow-exit") { coachState.flow = null; coachState.view = "now"; return renderCoach(); }
+  if (verb === "view") { coachState.view = arg; return renderCoach(); }
+  if (verb === "go") return coachGo(arg);
+  if (verb === "say") return coachSpeak(b.dataset.say, true);
+  if (verb === "flow") {
+    if (arg === "night") return coachStartFlow("night", minOfDay(now()) >= 270 && minOfDay(now()) < hhmmToMin(cfgNow().night.morningWakeEarliest) ? "early" : "gate");
+    if (arg === "nap") return coachStartFlow("nap", "naproutine");
+    if (arg === "bed") return coachStartFlow("bed", "routine");
+  }
+  // One write at a time: the screen can be rebuilt mid-write (loadEvents, realtime echo),
+  // and a fresh copy of the same button must not run the same insert again.
+  if (coachWriting) return;
+  coachWriting = true;
+  b.disabled = true;
+  try {
+    if (verb === "night-woke") {
+      await coachWoke();
+      coachStartFlow("night", minOfDay(now()) >= 270 && minOfDay(now()) < hhmmToMin(cfgNow().night.morningWakeEarliest) ? "early" : "gate");
+    } else if (verb === "bed-protest") {
+      coachStartFlow("bed", "L1");
+    } else if (verb === "nap-protest") {
+      coachStartFlow("nap", "L1");
+      coachState.flow.from = "protest";
+    } else if (verb === "nap-stir") {
+      await pauseSleep();
+      coachStartFlow("nap", "L1");
+      coachState.flow.from = "protest";
+    } else if (verb === "nap-end") {
+      await endSleep();
+      const d = coachDay();
+      coachToast(d.crib ? `Logged. Next: crib by ${clockTime(d.crib)}.` : "Logged.");
+      renderCoach();
+    } else if (verb === "asleep") {
+      await coachAsleep();
+    } else if (verb === "calm") {
+      if (f) { f.rounds++; f.holdT0 = null; }
+      if (f && f.mode === "bed" && openBedtime()) await addBedtimeRound(1);
+      coachGo("L1");
+    } else if (verb === "feed") {
+      await coachFeedStart(arg);
+      coachGo("feeding");
+    } else if (verb === "feed-stop") {
+      await coachFeedStop();
+      coachGo("aftfeed");
+    } else if (verb === "feed-stay") {
+      await coachFeedStart(arg);
+      renderCoach();
+    } else if (verb === "feed-stop-stay") {
+      await coachFeedStop();
+      renderCoach();
+    } else if (verb === "crib") {
+      await coachFeedStop();
+      await startBedtimeSession();
+      const d = coachDay();
+      if (d.S && (now() - d.S) / 60000 < cfgNow().ww.min) coachToast(`Only ${plDur(Math.round((now() - d.S) / 60000))} awake. If bedtime turns into a fight, it's too early, not too late.`);
+      coachGo("settling");
+    } else if (verb === "rescue") {
+      if (f && f.mode !== "nap") await coachRescue();
+      coachGo("rescue");
+    } else if (verb === "teeth" || verb === "tired") {
+      coachStartFlow("info", verb);
+    } else if (verb === "up") {
+      coachState.confirmUp = true; renderCoach();
+    } else if (verb === "up-no") {
+      coachState.confirmUp = false; renderCoach();
+    } else if (verb === "up-yes") {
+      coachState.confirmUp = false;
+      await endSleep();
+      coachStartFlow("info", "morning");
+    } else if (verb === "review") {
+      coachReview();
+    } else if (verb === "chip") {
+      coachAsk(b.dataset.q);
+    } else if (verb === "chat-clear") {
+      if (!coachState.clearArmed) { coachState.clearArmed = true; renderCoach(); setTimeout(() => { coachState.clearArmed = false; }, 4000); return; }
+      coachState.clearArmed = false;
+      coachState.chat = []; coachLS.set(COACH.chatKey, []); renderCoach();
+    } else if (verb === "plan-pause" || verb === "plan-restart") {
+      const i = coachPlanInfo();
+      if (!i.morning) { coachToast("Pausing or restarting only works 6 AM–noon. Decide in the morning."); return; }
+      const p = i.p || {};
+      if (verb === "plan-pause") await saveCoachPlan({ ...p, paused: true, pausedAt: now().toISOString() });
+      else {
+        const t = now();
+        await saveCoachPlan({ startDate: `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`, paused: false });
+      }
+    }
+  } finally {
+    coachWriting = false;
+    if (document.body.contains(b)) b.disabled = false;
+  }
+}
+async function onCoachChange(e) {
+  if (e.target.id === "co-start" && e.target.value) {
+    const i = coachPlanInfo();
+    if (i.p && i.n >= 1 && !i.morning) { coachToast("Changing the plan only works 6 AM–noon. Decide in the morning."); e.target.value = i.p.startDate || ""; return; }
+    await saveCoachPlan({ ...(coachState.plan || {}), startDate: e.target.value });
+  }
+  if (e.target.id === "co-speak") coachLS.set(COACH.speakKey, e.target.checked);
+  if (e.target.id === "co-dim") { coachLS.set(COACH.dimKey, e.target.checked); renderCoach(); }
+}
+function onCoachSubmit(e) {
+  if (e.target.id !== "co-ask") return;
+  e.preventDefault();
+  const q = $("co-q");
+  if (q) coachAsk(q.value);
+}
+
+// ============================================================
 //  11. WIRING — every button via addEventListener (no inline onclick)
 // ============================================================
 $("login-form").addEventListener("submit", handleLogin);
@@ -4093,6 +5141,11 @@ $("leo-fix-btn").addEventListener("click", () => {
   const s = openSleep() || lastEndedSleep();   // fix a mislogged/forgotten sleep time
   if (s) openEditModal(s);
 });
+// Coach overlay: one listener each, delegated — its body is rebuilt, these never are.
+$("leo-coach-btn").addEventListener("click", () => openCoach());
+$("coach").addEventListener("click", onCoachClick);
+$("coach").addEventListener("change", onCoachChange);
+$("coach").addEventListener("submit", onCoachSubmit);
 $("grow-save").addEventListener("click", saveGrowth);
 
 // "⋯ More" menu — the old screens, kept just in case
@@ -4133,6 +5186,7 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 function _redrawAll() {
   render(); renderNaps(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
+  coachRefresh();
 }
 
 window.leoDebug = {

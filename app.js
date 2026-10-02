@@ -4146,6 +4146,7 @@ function coachRules() {
       `3 · Escalating: pick him up. Still arms: no bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.`,
       `Then start again at step 1. No time limit on holds.`,
       `Panic scream: go straight to step 3.`,
+      `White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.`,
       `Hold him standing or on a hard upright chair. If you start nodding off, he goes into the crib on his back.`] },
     { h: "Feed gate", items: [
       `${gate}+ since his last full feed → Emma feeds him sitting up: not lying in bed, not on a sofa. Lights low, boring, then crib awake. If she feels herself dozing, he goes into the crib.`,
@@ -4699,9 +4700,11 @@ function coachStepHTML(f, g, c, T) {
       const held = f.holdT0 ? T.getTime() - f.holdT0 : 0;
       return step("Step 3 of 3", "Hold him still",
         "Pick him up. Still arms: no bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.",
-        `${coLadder(3)}<p>Stand, or sit on a hard upright chair. No time limit. If he dozes off in your arms, put him in the crib anyway, then step 1.</p>
+        `${coLadder(3)}<p class="co-who">White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.</p>
+         <p>Stand, or sit on a hard upright chair. No time limit. If he dozes off in your arms, put him in the crib anyway, then step 1.</p>
          ${held >= COACH.painCheckMin * 60000 ? `<div class="co-al red">${COACH.painCheckMin}+ minutes in arms without calming. Check: pain or protest?</div>` : ""}`,
-        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"));
+        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"),
+        "Hold him still. White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still. No bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.");
     }
     case "pain":
       return step("Pain or protest?", "Does he calm in your arms?",

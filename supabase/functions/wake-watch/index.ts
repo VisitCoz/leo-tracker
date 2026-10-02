@@ -242,7 +242,7 @@ async function evaluatePushAlerts(cfg: any, tz: string, w: any, todayDate: strin
     if (nowMin >= lo && nowMin <= hi && w.awakeMin >= cfg.ww.min && !nightStarted) alerts.push({
       key: `bedtime:${todayDate}`,
       title: "Bedtime window open",
-      body: `Awake ${fmtMin(w.awakeMin)}. Start the routine — calm and a bit later beats fast and too early.`,
+      body: `Awake ${fmtMin(w.awakeMin)}. Bedtime routine, 30 minutes: feed first → pajamas → massage → white noise → crib awake. Short-nap day: earlier is right, never before ${cfg.night.bedtimeEarliest}. The Coach has tonight's crib time.`,
     });
   }
   return alerts;

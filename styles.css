@@ -139,6 +139,32 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .ww-fill  { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: currentColor; opacity: .75; transition: width .4s ease; }
 .ww-band  { position: absolute; top: -3px; bottom: -3px; border-radius: 6px;
   border: 1px dashed rgba(255,255,255,.5); background: rgba(255,255,255,.07); }
+
+/* ---------- By day: two clocks, the same size ----------
+   Awake time and time since his last full feed side by side, FEED OK / NO FEED YET
+   under the second (Mike, 3 Oct). The night card keeps its one big clock. */
+.lb-two { display: grid; grid-template-columns: 1fr 1fr; }
+.lb-c { padding: 0 8px; min-width: 0; }
+.lb-c + .lb-c { border-left: 1px solid rgba(255,255,255,.14); }
+.lb-c .card-eyebrow { font-size: 11.5px; letter-spacing: .05em; white-space: nowrap; }
+.lb-num { font-family: "Fraunces", serif; font-size: 34px; font-weight: 600; line-height: 1.05;
+  margin: 7px 0 5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lb-num .hero-sec { font-size: 14px; margin-left: 3px; }
+.lb-num .hero-sec.solo { font-size: 34px; margin-left: 0; opacity: 1; }
+.lb-ans { margin: 0; font-size: 14px; line-height: 1.3; min-height: 38px; }
+.lb-sub { display: block; font-size: 12px; opacity: .7; margin-top: 2px; line-height: 1.3; }
+.lb .ww-track, .lb .fbar { margin: 10px 2px 14px; }
+/* Napping, or nothing to count yet: the bar stays, faded and empty, so the two
+   columns keep the same shape. */
+.ww-track.idle, .fbar.idle { opacity: .35; }
+.ww-track.idle > * { display: none; }
+/* The feed bar fills toward the gate mark at 75%, sage once it says FEED OK. */
+.fbar { position: relative; height: 6px; border-radius: 999px; background: rgba(0,0,0,.3); }
+.fbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: currentColor; opacity: .55; }
+.fbar.open i { background: var(--sage); opacity: .95; }
+.fbar em { position: absolute; left: 75%; top: -4px; bottom: -4px; width: 2px; margin-left: -1px;
+  background: rgba(255,255,255,.6); border-radius: 1px; }
+.fbar small { position: absolute; left: 75%; top: 8px; transform: translateX(-50%); font-size: 10px; opacity: .65; line-height: 1; }
 .leo-sleep-actions { display: flex; gap: 8px; }
 .leo-sleep-actions .btn { flex: 1; }
 /* Night: the big "He woke up" with the quiet morning exit under it, and the

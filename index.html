@@ -75,11 +75,26 @@
         <p id="leo-wake-eyebrow" class="card-eyebrow">Awake for</p>
         <p id="leo-wake-time" class="wake-time">—</p>
         <p id="leo-wake-status" class="wake-status">Log a sleep to start the wake window</p>
-        <p id="leo-wake-why" class="wake-why"></p>
-        <div id="leo-ww-track" class="ww-track">
-          <div id="leo-ww-fill" class="ww-fill"></div>
-          <div id="leo-ww-band" class="ww-band"></div>
+        <!-- By day: two clocks the same size, awake and since his last full feed.
+             Hidden at night: the night card is the one big clock above. -->
+        <div id="leo-two" class="lb-two hidden">
+          <div class="lb-c">
+            <p id="leo-two-eyebrow" class="card-eyebrow">Awake for</p>
+            <p id="leo-two-time" class="lb-num">—</p>
+            <p id="leo-two-status" class="lb-ans"></p>
+            <div id="leo-ww-track" class="ww-track">
+              <div id="leo-ww-fill" class="ww-fill"></div>
+              <div id="leo-ww-band" class="ww-band"></div>
+            </div>
+          </div>
+          <div class="lb-c">
+            <p class="card-eyebrow">Since full feed</p>
+            <p id="leo-feed-time" class="lb-num">—</p>
+            <p id="leo-feed-status" class="lb-ans"></p>
+            <div id="leo-fbar" class="fbar"><i id="leo-fbar-fill"></i><em></em><small id="leo-fbar-mark"></small></div>
+          </div>
         </div>
+        <p id="leo-wake-why" class="wake-why"></p>
         <div id="leo-wake-pair" class="wake-pair">
           <div><span id="leo-pair-a" class="pair-num">—</span><span id="leo-pair-a-lab" class="pair-lab">—</span></div>
           <div><span id="leo-pair-b" class="pair-num">—</span><span id="leo-pair-b-lab" class="pair-lab">—</span></div>

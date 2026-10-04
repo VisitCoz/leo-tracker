@@ -2194,23 +2194,15 @@ function bedtimeStreak() {
 const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
 const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
 
-// When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
-// schedule — nobody wakes him to feed. It counts from the last FULL feed, on the
-// Coach's clock (left + right merged), so a snack doesn't restart it (Mike, 2 Oct).
-function feedGateAt(t) {
-  const T = t || now();
-  const f = coachLastFullFeed(T);
-  if (!f) return null;
-  return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
-}
-
 // ---------- Sub-tab: TONIGHT ----------
 function trainTonightHTML() {
   const cfg = cfgNow();
   const st = sleepDayStats();
   const proj = projectTonight(cfg, st);
   const b = openBedtime();
-  const gate = feedGateAt();
+  // The feed gate is a MINIMUM, not a schedule — nobody wakes him to feed. Same
+  // gate as the home card and the Coach: coachGate().
+  const gate = coachGate();
   const streak = bedtimeStreak();
   const nights = trainingNights();
 
@@ -2250,7 +2242,7 @@ function trainTonightHTML() {
   <div class="tr-plan">
     <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
     <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
-      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
+      gate.known ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
     }</span></div>
     <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
   </div>
@@ -2318,16 +2310,16 @@ const TRAIN_LADDER = `
 // ---------- Sub-tab: FEEDS ----------
 function trainFeedsHTML() {
   const cfg = cfgNow();
-  const gate = feedGateAt();
+  const gate = coachGate();
   const fr = feedRatio7d();
   const g = cfg.night.feedGateMin;
   return `
-  <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
-    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
-    ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
+  <div class="tr-gatecard ${gate.open ? "open" : "shut"}">
+    <div class="tr-gate-h">${gate.known ? (gate.open ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
+    ${gate.known ? `<div class="tr-gate-num">${gate.open
       ? `since ${clockTime(gate.opens)}`
       : `opens ${clockTime(gate.opens)}`}</div>
-    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${gate.open
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>
@@ -2832,7 +2824,15 @@ function renderLeoWake() {
   // caused this night went. It stays up now; styles.css mutes its arcs under
   // body.is-night so the card never lights a dark room.
 
+  // By day the card is two clocks the same size (Mike, 3 Oct): awake or napping on
+  // the left, time since his last full feed on the right. Every other state, the
+  // night card included, is the one big clock, and set() puts it back.
+  const two = (on) => {
+    $("leo-two").classList.toggle("hidden", !on);
+    for (const id of ["leo-wake-eyebrow", "leo-wake-time", "leo-wake-status"]) $(id).classList.toggle("hidden", on);
+  };
   const set = (eyebrow, hero, status, why, zone) => {
+    two(false);
     $("leo-wake-eyebrow").textContent = eyebrow;
     $("leo-wake-time").innerHTML = hero;
     $("leo-wake-status").innerHTML = status;
@@ -2848,6 +2848,41 @@ function renderLeoWake() {
     $("leo-pair-a-lab").textContent = aLab || "";
     $("leo-pair-b").textContent = b || "—";
     $("leo-pair-b-lab").textContent = bLab || "";
+  };
+  // "1:20 – 2:05 PM": the first AM/PM goes when both ends share it.
+  const span = (a, b, sep) => {
+    const x = clockTime(a), y = clockTime(b), ap = (x.match(/\s?[AP]M$/i) || [""])[0];
+    return `${ap && y.endsWith(ap) ? x.slice(0, -ap.length) : x}${sep}${y}`;
+  };
+  const setDay = (eyebrow, hero, status, why, zone, napping) => {
+    two(true);
+    $("leo-two-eyebrow").textContent = eyebrow;
+    $("leo-two-time").innerHTML = hero;
+    $("leo-two-status").innerHTML = status;
+    $("leo-wake-why").textContent = why;
+    $("leo-wake-why").classList.remove("hidden");
+    card.className = `card wake-card zone-${zone} lb`;
+    track.classList.remove("hidden");
+    track.classList.toggle("idle", napping);
+    // The feed clock: the same gate as the night card and the Coach, never a copy.
+    const g = coachGate();
+    const gm = cfg.night.feedGateMin;
+    $("leo-feed-time").innerHTML = g.last ? heroTime(now() - g.last) : "—";
+    $("leo-feed-status").innerHTML = verdictHTML(feedVerdict(g), true) + `<span class="lb-sub">${
+      !g.known ? "Log feeds in ⋯ More → 🍼 Feeds &amp; milestones"
+      : napping && g.open ? "only if he wakes — never wake him"
+      : g.open ? `since ${clockTime(g.opens)}` : `OK from ${clockTime(g.opens)}`}</span>`;
+    $("leo-fbar").classList.toggle("open", !!g.open);
+    $("leo-fbar").classList.toggle("idle", !g.last);
+    // The gate mark sits at 75% of the bar (styles.css .fbar em).
+    $("leo-fbar-fill").style.width = g.last ? Math.min(100, (g.sinceMin / (gm / 0.75)) * 100) + "%" : "0";
+    $("leo-fbar-mark").textContent = plDur(gm);
+    // Asleep today = the naps since he got up for the day; then his last finished nap.
+    const up = st.blocks.filter((b) => b.kind === "night" && b.endAt).pop();
+    const nap = st.naps.filter((b) => !b.running).pop();
+    pair(plDur(st.napMins), up ? `asleep today · since ${clockTime(up.endAt)}` : "asleep today",
+         nap ? plDur(nap.fullMins) : "—",
+         nap ? `last nap · ${span(nap.startAt, nap.endAt, "–")}` : napping ? "first nap today" : "no nap yet today");
   };
 
   // ---- Settling in the crib (bedtime session running)
@@ -2944,14 +2979,12 @@ function renderLeoWake() {
   // ---- DAY, ASLEEP ----------------------------------------------------
   if (w.asleep) {
     const cutoff = hhmmToMin(cfg.naps.lastNapCutoff);
-    set(`Napping since ${clockTime(new Date(w.asleep.start_at))}`,
-        heroTime(now() - new Date(w.asleep.start_at)),
-        `Wake him by <b>${plFmt(cutoff)}</b>.`,
-        "A nap after that steals the tiredness he needs for bedtime.",
-        "green");
-    pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
-    track.classList.add("hidden");
+    const start = new Date(w.asleep.start_at);
+    setDay("Napping for",
+        heroTime(now() - start),
+        `Wake him by <b>${plFmt(cutoff)}</b>`,
+        `Napping since ${clockTime(start)}. A nap after that steals the tiredness he needs for bedtime.`,
+        "green", true);
     return;
   }
 
@@ -2965,21 +2998,18 @@ function renderLeoWake() {
   }
 
   const label = w.isLastOfDay ? "Bedtime window" : w.isFirstOfDay ? "First window" : "Window";
-  set("Awake for",
+  setDay("Awake for",
       heroTime(now() - w.wokeAt),
       w.zone === "early"
-        ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
-        : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`,
+        ? `${label} opens <b>${clockTime(w.opensAt)}</b>`
+        : `${label} <b>${span(w.opensAt, w.closesAt, " – ")}</b>`,
       w.zone === "early"
         ? `Putting him down before he's tired is what makes bedtime long.`
         : w.zone === "red"
           ? `Past the window — overtired makes settling harder, not easier.`
           : `He's usually ready for the next sleep after ${plDur(w.windowMin)}–${plDur(w.windowMax)} awake.`,
-      w.zone);
-  pair(plDur(st.napMins), "day sleep today",
-       `${clockTime(w.opensAt)}–${clockTime(w.closesAt)}`, "next sleep window");
+      w.zone, false);
 
-  track.classList.remove("hidden");
   const scale = w.windowMax + 30;                 // headroom so overshoot stays visible
   $("leo-ww-fill").style.width = Math.min(100, (w.awakeMin / scale) * 100) + "%";
   const band = $("leo-ww-band");
@@ -4275,19 +4305,26 @@ function coachLastFullFeed(t) {
   const full = coachFeedSessions(t).filter((x) => x.full && !x.running);
   return full.length ? new Date(full[full.length - 1].end) : null;
 }
-// known=false when no full feed is logged since tonight's routine: the gate
-// would otherwise time itself off an afternoon feed and say "open" by mistake.
+// THE feed gate, day and night: cfgNow().night.feedGateMin since his last full
+// feed. The home card, the Coach, the Training tab and the Feeds tab all read this,
+// so they can't give two answers (Mike, 3 Oct).
+// At night, known=false when no full feed is logged since tonight's routine: the
+// gate would otherwise time itself off an afternoon feed and say "open" by mistake.
 function coachGate(t) {
   const T = t || now();
   const c = cfgNow();
   const ns = nightState(null, c, T);
   const last = coachLastFullFeed(T);
-  // Anchor on crib time when there is a bedtime session: the night row only starts
-  // when he falls ASLEEP, which after an 80-minute protest drops the routine feed.
-  const tb = tonightsBedtime(T);
-  const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
-  const from = anchor - COACH.routineFeedLeadMin * 60000;
-  if (!last || last.getTime() < from) return { known: false, ns };
+  if (ns.isNight) {
+    // Anchor on crib time when there is a bedtime session: the night row only starts
+    // when he falls ASLEEP, which after an 80-minute protest drops the routine feed.
+    const tb = tonightsBedtime(T);
+    const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
+    const from = anchor - COACH.routineFeedLeadMin * 60000;
+    if (!last || last.getTime() < from) return { known: false, ns };
+  } else if (!last) {
+    return { known: false, ns };
+  }
   const opens = new Date(last.getTime() + c.night.feedGateMin * 60000);
   return { known: true, open: T >= opens, last, opens, sinceMin: (T - last) / 60000, ns };
 }

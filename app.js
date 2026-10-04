@@ -1405,6 +1405,7 @@ function renderNextFeed() {
   if (!el) return;
   const g = coachGate();
   el.textContent = !g.known ? "No full feed logged yet"
+    : g.why ? `Feed OK · ${g.why}`
     : g.open ? `Feed OK since ${clockTime(g.opens)}`
     : `Feed OK from ${clockTime(g.opens)} · in ${humanMins(Math.max(0, Math.round((g.opens - now()) / 60000)))}`;
 }
@@ -2230,7 +2231,9 @@ function trainTonightHTML() {
   <div class="tr-plan">
     <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
     <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
-      gate.known ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
+      !gate.known ? "no full feed logged yet"
+      : gate.why ? `<b>open</b> <span class="tr-dim">(${gate.why})</span>`
+      : `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>`
     }</span></div>
     <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
   </div>
@@ -2304,10 +2307,10 @@ function trainFeedsHTML() {
   return `
   <div class="tr-gatecard ${gate.open ? "open" : "shut"}">
     <div class="tr-gate-h">${gate.known ? (gate.open ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
-    ${gate.known ? `<div class="tr-gate-num">${gate.open
+    ${gate.known ? `<div class="tr-gate-num">${gate.why || (gate.open
       ? `since ${clockTime(gate.opens)}`
-      : `opens ${clockTime(gate.opens)}`}</div>
-    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${gate.open
+      : `opens ${clockTime(gate.opens)}`)}</div>
+    <p class="tr-gate-n">${gate.last ? `Last full feed ended ${clockTime(gate.last)}. ` : ""}${gate.open
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>
@@ -2859,6 +2862,7 @@ function renderLeoWake() {
     $("leo-feed-status").innerHTML = verdictHTML(feedVerdict(g), true) + `<span class="lb-sub">${
       !g.known ? "Log feeds in ⋯ More → 🍼 Feeds &amp; milestones"
       : napping && g.open ? "only if he wakes — never wake him"
+      : g.why ? g.why
       : g.open ? `since ${clockTime(g.opens)}` : `OK from ${clockTime(g.opens)}`}</span>`;
     $("leo-fbar").classList.toggle("open", !!g.open);
     $("leo-fbar").classList.toggle("idle", !g.last);
@@ -4310,8 +4314,12 @@ function coachGate(t) {
     const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
     const from = anchor - COACH.routineFeedLeadMin * 60000;
     if (!last || last.getTime() < from) return { known: false, ns };
-  } else if (!last) {
-    return { known: false, ns };
+  } else {
+    // The first full feed after he's up for the day is always OK (Mike, 3 Oct): it
+    // says so until that feed is logged, then the hours count from it.
+    const up = sleepDayStats(null, T).blocks.filter((b) => b.kind === "night" && b.endAt && b.endAt <= T).pop();
+    if (up && (!last || last < up.endAt)) return { known: true, open: true, why: "first feed of the day", last: null, ns };
+    if (!last) return { known: false, ns };
   }
   const opens = new Date(last.getTime() + c.night.feedGateMin * 60000);
   return { known: true, open: T >= opens, last, opens, sinceMin: (T - last) / 60000, ns };
@@ -4638,7 +4646,7 @@ function coachFlowHTML() {
   h += `<div class="co-step">${coachStepHTML(f, g, c, T)}</div>`;
 
   // The gate opened while on the steps: never switch to the breast mid-cry.
-  if (f.mode === "night" && ladder && g.known && g.open && g.last.getTime() < f.t0 + 60000) {
+  if (f.mode === "night" && ladder && g.last && g.open && g.last.getTime() < f.t0 + 60000) {
     h += `<div class="co-al gold">It's now ${plDur(c.night.feedGateMin)}+ since his last full feed. Keep going with the steps until he's asleep: no feed on this wake. If he falls asleep and wakes up later, that new wake is a feed.</div>`;
   }
   if (f.mode === "nap" && ladder && T >= atToday(c.naps.lastNapCutoff, T)) {
@@ -4680,7 +4688,7 @@ function coachStepHTML(f, g, c, T) {
     case "open":
       return step("Feed gate · open", "Emma feeds",
         "Sitting up, not lying in bed, not on a sofa. Lights low, no talking. Then into the crib awake, on his back.",
-        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+        `${g.last ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
          <p class="co-who">${minOfDay(T) < 120 || minOfDay(T) >= 18 * 60 ? "Emma is asleep in the other room until 2 AM: Mike wakes her. " : ""}If she feels herself dozing, he goes into the crib.</p>
          <p class="co-note">1–2 night feeds are normal at this age. This is not night-weaning.</p>${noSleepLogged}`,
         coBtn("feed:left", "Feeding · left", "gold") + coBtn("feed:right", "Feeding · right", "gold") + coBtn("asleep", "He settled on his own", "ghost wide"));
@@ -4696,9 +4704,9 @@ function coachStepHTML(f, g, c, T) {
         "If he protests, Mike takes over with the steps. Emma goes back to bed.",
         "", coBtn("asleep", "😴 He's asleep", "sleep") + coBtn("go:L1", "Protesting → step 1", "cry"));
     case "closed":
-      return step("Feed gate · closed", g.known ? `Opens at ${clockTime(g.opens)}` : "Not hunger",
+      return step("Feed gate · closed", g.opens ? `Opens at ${clockTime(g.opens)}` : "Not hunger",
         "This wake isn't hunger. Mike goes in. Emma stays out of the room: if he smells milk, he keeps asking for it.",
-        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+        `${g.last ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
          <div class="co-dont">Never end the steps with a feed.</div>${noSleepLogged}`,
         coBtn("go:L1", "Start the steps", "cry"));
     case "L1":
@@ -4959,7 +4967,7 @@ Doctor or ER now: ${COACH_RED.join("; ")}.
 NOW
 Time: ${T.toLocaleString()}.
 ${ns.isNight ? "It is night." : `It is day. ${d && d.kind === "nap" ? `Next nap: crib by ${clockTime(d.crib)}.` : d && d.kind === "bed" ? `Bedtime: routine ${clockTime(d.routine)}, crib by ${clockTime(d.crib)}.` : d && d.kind === "napping" ? `Napping since ${clockTime(d.start)}, wake him by ${clockTime(d.wakeBy)}.` : ""}`}
-Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}, last full feed ${clockTime(g.last)}` : ns.isNight ? "no full feed logged since tonight's routine" : "no full feed logged"}.
+Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}${g.why ? ", " + g.why : ""}${g.last ? `, last full feed ${clockTime(g.last)}` : ""}` : ns.isNight ? "no full feed logged since tonight's routine" : "no full feed logged"}.
 Rescue night: ${tbR && isRescue(tbR) ? "YES, declared in the app tonight" : "no"}.
 Plan: ${!i.p ? "not started" : i.p.paused ? "paused" : i.n < 1 ? "starts " + i.p.startDate : i.n > 7 ? "7 nights done" : "night " + i.n + " of 7"}.${f ? `\nThey are in the step-by-step: ${f.mode}, step ${f.step}${f.cryT0 ? `, crying for ${plDur(Math.round((T.getTime() - f.cryT0) / 60000))}` : ""}.` : ""}
 

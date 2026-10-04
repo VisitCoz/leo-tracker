@@ -324,7 +324,6 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 
 /* Next-feed prediction (gentle guideline, not an alarm) */
 .next-feed { margin: 0 0 6px; font-size: 14px; color: var(--sage); }
-.next-feed.due { color: var(--amber); font-weight: 600; }
 
 /* Edit modal fields */
 .edit-field { margin-top: 8px; }

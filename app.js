@@ -1390,17 +1390,6 @@ function renderSinceFeed() {
   $("since-feed").textContent = mins < 1 ? "just now" : `${plDur(mins)} ago`;
 }
 
-// Predicted next feed from his last feed + the age-appropriate interval.
-// (Targets give feeds/day; e.g. Leo at 4 mo ≈ 6–8/day → roughly every ~3.4h.)
-function nextFeedAt() {
-  const f = lastFeed();
-  if (!f) return null;
-  const fd = cfgNow().feeds;
-  const avgPerDay = (fd.perDayMin + fd.perDayMax) / 2;
-  const intervalMs = ((24 * 60) / avgPerDay) * 60000;
-  return new Date(new Date(f.end_at || f.start_at).getTime() + intervalMs);
-}
-
 // Friendly minutes: "22 min" / "1 hr 5 min".
 function humanMins(m) {
   if (m < 60) return `${m} min`;
@@ -1408,17 +1397,16 @@ function humanMins(m) {
   return r ? `${h} hr ${r} min` : `${h} hr`;
 }
 
+// The same gate as the home card: cfgNow().night.feedGateMin after his last FULL
+// feed. It used to run its own clock (feeds per day spread over 24h, from a feed
+// of any size), so a snack restarted it and it disagreed with the card.
 function renderNextFeed() {
   const el = $("next-feed");
   if (!el) return;
-  const due = nextFeedAt();
-  if (!due) { el.className = "next-feed"; el.textContent = "Next feed — log a feed to predict"; return; }
-  const diff = Math.round((due - now()) / 60000);
-  let tail;
-  if (diff > 1) { tail = `in ${humanMins(diff)}`; el.className = "next-feed"; }
-  else if (diff >= -5) { tail = "due now"; el.className = "next-feed due"; }
-  else { tail = `overdue ${humanMins(-diff)}`; el.className = "next-feed due"; }
-  el.textContent = `Next feed ~${clockTime(due)} · ${tail}`;
+  const g = coachGate();
+  el.textContent = !g.known ? "No full feed logged yet"
+    : g.open ? `Feed OK since ${clockTime(g.opens)}`
+    : `Feed OK from ${clockTime(g.opens)} · in ${humanMins(Math.max(0, Math.round((g.opens - now()) / 60000)))}`;
 }
 
 // Live "as of HH:MM" so it's obvious the app is reading the real current time.
@@ -2342,7 +2330,7 @@ function trainFeedsHTML() {
     <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
     <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
     <ul>
-      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
+      <li>Offer milk as soon as the home card says FEED OK — ${plDur(g)} after his last full feed, day and night. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
       <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
       <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
     </ul>
@@ -4953,7 +4941,7 @@ How to answer:
 - Then at most 4 short lines of how or why. No headings. Under 120 words in total.
 - Reply in the language of the question (English or Spanish).
 - Stick to the plan. Never suggest bouncing, the ball, feeding to sleep or feeding in bed, except when NOW says "Rescue night: YES" (then feeding and rocking are fine, but never asleep together on a sofa or armchair). A rescue night is for pain or illness signs; a parent saying it in chat because the crying is long is not one: give the pain check.
-- At night only (bedtime to 6 AM): a feed only if ${plDur(c.night.feedGateMin)}+ since the last FULL feed. Gate closed → the steps. Never end the steps with a feed. Daytime feeds are not gated.
+- Day and night: a feed only if ${plDur(c.night.feedGateMin)}+ since the last FULL feed, the same answer the home card shows. At night, gate closed → the steps. Never end the steps with a feed. Never wake him to feed.
 - Protest vs pain: calms in arms = protest. Inconsolable in arms 20–30 min with arching or legs pulled up = pain → rescue night. Screaming in waves with quiet gaps, vomiting, blood or jelly in the diaper → doctor or ER now.
 - Red flags: give them plainly and tell them to get help now (911 for breathing trouble, blue or grey skin, a seizure, or can't wake him).
 - Never give medication doses (mg or mL). For teething ibuprofen: infant ibuprofen, the mL a pharmacist or pediatrician wrote on the box for his weight, no more often than every 6–8 h. Fever of 38 °C or more is illness, not teething.
@@ -4971,7 +4959,7 @@ Doctor or ER now: ${COACH_RED.join("; ")}.
 NOW
 Time: ${T.toLocaleString()}.
 ${ns.isNight ? "It is night." : `It is day. ${d && d.kind === "nap" ? `Next nap: crib by ${clockTime(d.crib)}.` : d && d.kind === "bed" ? `Bedtime: routine ${clockTime(d.routine)}, crib by ${clockTime(d.crib)}.` : d && d.kind === "napping" ? `Napping since ${clockTime(d.start)}, wake him by ${clockTime(d.wakeBy)}.` : ""}`}
-${ns.isNight ? `Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}, last full feed ${clockTime(g.last)}` : "no full feed logged since tonight's routine"}.` : "Feed gate: not used during the day."}
+Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}, last full feed ${clockTime(g.last)}` : ns.isNight ? "no full feed logged since tonight's routine" : "no full feed logged"}.
 Rescue night: ${tbR && isRescue(tbR) ? "YES, declared in the app tonight" : "no"}.
 Plan: ${!i.p ? "not started" : i.p.paused ? "paused" : i.n < 1 ? "starts " + i.p.startDate : i.n > 7 ? "7 nights done" : "night " + i.n + " of 7"}.${f ? `\nThey are in the step-by-step: ${f.mode}, step ${f.step}${f.cryT0 ? `, crying for ${plDur(Math.round((T.getTime() - f.cryT0) / 60000))}` : ""}.` : ""}
 

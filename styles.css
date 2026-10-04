@@ -1024,7 +1024,6 @@ body.coach-on { overflow: hidden; }
 #coach .co-step { background: var(--co-surface); border-radius: 20px; padding: 18px; display: grid; gap: 12px; }
 #coach .co-step h3 { font-size: 27px; line-height: 1.15; }
 #coach .co-stephead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-#coach .co-say { border: 1px solid var(--co-line); background: none; border-radius: 10px; min-width: 44px; min-height: 44px; cursor: pointer; color: var(--co-ink); }
 #coach .co-do { font-size: 18px; font-weight: 700; color: var(--co-ink); }
 #coach .co-who { background: var(--co-sage-soft); border-radius: 12px; padding: 10px 12px; font-weight: 700; color: var(--co-ink); }
 #coach .co-dont { background: var(--co-red-soft); border-radius: 12px; padding: 10px 12px; font-size: 15px; color: var(--co-ink); }

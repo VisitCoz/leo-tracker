@@ -3954,7 +3954,6 @@ const COACH = {
   sessionGapMin: 10,        // left + right breast rows this close together are ONE feed
   routineFeedLeadMin: 90,   // a full feed this long before night start is tonight's routine feed
   chatKey: "leo_coach_chat_v1",
-  speakKey: "leo_coach_speak",
   dimKey: "leo_coach_dim",
 };
 
@@ -4520,12 +4519,11 @@ function coachFlowHTML() {
 
 const coLadder = (n) => `<div class="co-ladder">${["Wait", "Hand + shhh", "Hold still"].map((l, i) =>
   `<span class="${i + 1 === n ? "on" : ""}">${l}</span>`).join("")}</div>`;
-const coSay = (text) => `<button class="co-say" data-act="say" data-say="${coEsc(text)}" aria-label="Read aloud">🔊</button>`;
 
 function coachStepHTML(f, g, c, T) {
   const gate = plDur(c.night.feedGateMin);
-  const step = (label, title, doText, more, btns, sayText) =>
-    `<div class="co-stephead"><span class="co-label">${label}</span>${coSay(sayText || title + ". " + doText)}</div>
+  const step = (label, title, doText, more, btns) =>
+    `<div class="co-stephead"><span class="co-label">${label}</span></div>
      <h3>${title}</h3><p class="co-do">${doText}</p>${more || ""}<div class="co-stepbtns">${btns}</div>`;
   const noSleepLogged = f.mode === "night" && !openSleep() && !openBedtime()
     ? `<p class="co-note">No night sleep is logged, so this wake isn't counted in the tracker.</p>` : "";
@@ -4582,8 +4580,7 @@ function coachStepHTML(f, g, c, T) {
         `${coLadder(3)}<p class="co-who">White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.</p>
          <p>Stand, or sit on a hard upright chair. No time limit. If he dozes off in your arms, put him in the crib anyway, then step 1.</p>
          ${held >= COACH.painCheckMin * 60000 ? `<div class="co-al red">${COACH.painCheckMin}+ minutes in arms without calming. Check: pain or protest?</div>` : ""}`,
-        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"),
-        "Hold him still. White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still. No bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.");
+        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"));
     }
     case "pain":
       return step("Pain or protest?", "Does he calm in your arms?",
@@ -4591,8 +4588,7 @@ function coachStepHTML(f, g, c, T) {
         `<p>Arching at Mike that stops when Emma walks in is protest, not pain.</p>
          <p><b>Pain looks like:</b> inconsolable in anyone's arms for 20–30 minutes, arching, legs pulled up, worse lying flat → rescue night.</p>
          <div class="co-dont"><b>${coEsc(COACH_911)}</b><br><br><b>Go to a doctor or ER now for:</b><ul>${COACH_RED.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></div>`,
-        coBtn("go:L3", "He calms → protest, continue", "sleep") + coBtn("rescue", f.mode === "nap" ? "Comfort him fully" : "Rescue night", "cry"),
-        "Does he calm in your arms? If yes, and he's otherwise well, keep going with the steps. If he stays inconsolable for 20 to 30 minutes, arching or pulling his legs up, it's a rescue night. Screaming in waves with quiet gaps, vomiting, or blood or jelly in the diaper: go to a doctor or the E R now. Struggling to breathe, blue lips, a seizure, or you can't wake him: call 9 1 1.");
+        coBtn("go:L3", "He calms → protest, continue", "sleep") + coBtn("rescue", f.mode === "nap" ? "Comfort him fully" : "Rescue night", "cry"));
     case "rescue":
       return step("Rescue", "Comfort him fully",
         `Say it out loud: "This is a rescue ${f.mode === "nap" ? "nap" : "night"}." Then whatever works: arms, feeding, rocking.`,
@@ -4635,8 +4631,7 @@ function coachStepHTML(f, g, c, T) {
         "Infant ibuprofen about 30 minutes before the routine. Measure only with the box's syringe.",
         `<p>Before the first dose, have a pharmacist or your pediatrician write on the box the mL for his weight, for that exact bottle. Infant drops and children's liquid are different strengths. Never more often than every 6–8 hours. Skip it and call if he isn't drinking, is vomiting or has diarrhea.</p>
          <div class="co-dont">Fever of 38 °C or more = he's sick, not teething: rescue night, no steps.</div>
-         <p>Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → it isn't the tooth, keep going.</p>`, "",
-        "Teething, worst two or three nights only. Infant ibuprofen about 30 minutes before the routine, only the millilitres the pharmacist wrote on the box for his weight, measured with the box's syringe, never more often than every 6 to 8 hours. Fever of 38 or more means he's sick, not teething: rescue night.");
+         <p>Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → it isn't the tooth, keep going.</p>`, "");
     case "tired":
       return step("Tired early", "Change the scene first",
         "Outside, light, a new toy, for 5 minutes.",
@@ -4651,10 +4646,9 @@ function coachStepHTML(f, g, c, T) {
 }
 
 function coachAskHTML() {
-  const speak = coachLS.get(COACH.speakKey, true);
   const msgs = coachState.chat.map((m) =>
     `<div class="co-msg ${m.role === "user" ? "me" : "ai"}">${coEsc(m.content)}</div>`).join("");
-  return `<p class="co-note">Say what's happening: tap the box, then the mic on your keyboard. The coach knows the plan, the time and the last 30 hours of the log.</p>
+  return `<p class="co-note">The coach knows the plan, the time and the last 30 hours of the log.</p>
     <div class="co-chips">${["He's been crying 20 min in my arms and arching", "He woke 40 minutes after a feed", "Can we skip the plan tonight?", "He seems to be teething"]
       .map((q) => `<button data-act="chip" data-q="${coEsc(q)}">${coEsc(q)}</button>`).join("")}</div>
     <div id="co-chat" class="co-chat">${msgs}${coachState.busy ? `<div class="co-msg ai co-typing">Thinking…</div>` : ""}</div>
@@ -4663,7 +4657,6 @@ function coachAskHTML() {
       <div class="co-askrow">
         <button class="co-btn sleep" type="submit" ${coachState.busy ? "disabled" : ""}>Ask</button>
       </div>
-      <label class="co-toggle"><input type="checkbox" id="co-speak" ${speak ? "checked" : ""}> 🔊 Read answers aloud. Silent Mode off (or an earbud), screen on until it answers.</label>
       ${coachState.chat.length ? `<button class="co-link" type="button" data-act="chat-clear">${coachState.clearArmed ? "Tap again to clear the conversation" : "Clear this conversation"}</button>` : ""}
     </form>`;
 }
@@ -4740,28 +4733,6 @@ function closeCoach() {
   coachState.flow = null;
   coachState.confirmUp = false;
   coachState.view = "now";
-  try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
-}
-
-// ---- Voice out: the phone's own voice. iOS only lets a page speak after a tap,
-// so the first speak() happens synchronously inside the tap, before any await. ---
-function coachSpeakUnlock() {
-  try {
-    if (!coachLS.get(COACH.speakKey, true) || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(""));
-  } catch (e) {}
-}
-function coachSpeak(text, force) {
-  try {
-    if ((!force && !coachLS.get(COACH.speakKey, true)) || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const t = String(text).replace(/[*_#`>]/g, "");
-    const u = new SpeechSynthesisUtterance(t);
-    u.lang = /[¿¡ñáéíóú]|\b(que|está|bebé|despert|llor|cuna|dormid)/i.test(t) ? "es-MX" : "en-US";
-    u.rate = 0.95;
-    window.speechSynthesis.speak(u);
-  } catch (e) {}
 }
 
 // ---- The AI: the existing ask-leo function, with the plan as system context ---
@@ -4834,7 +4805,6 @@ ${coachLogText(T)}`;
 async function coachAsk(question) {
   const q = String(question || "").trim();
   if (!q || coachState.busy) return;
-  coachSpeakUnlock();                       // inside the tap, before any await
   coachState.chat.push({ role: "user", content: q });
   coachState.busy = true;
   coachState.view = "ask";
@@ -4858,7 +4828,6 @@ async function coachAsk(question) {
   coachState.busy = false;
   if (reply) {
     coachState.chat.push({ role: "assistant", content: reply });
-    if (coachOpen()) coachSpeak(reply);
   } else {
     coachState.chat.push({ role: "assistant", content: "I couldn't reach the coach. Use the steps on the Now screen, and try again in a minute." });
   }
@@ -4886,7 +4855,6 @@ async function onCoachClick(e) {
   if (verb === "flow-exit") { coachState.flow = null; coachState.view = "now"; return renderCoach(); }
   if (verb === "view") { coachState.view = arg; return renderCoach(); }
   if (verb === "go") return coachGo(arg);
-  if (verb === "say") return coachSpeak(b.dataset.say, true);
   if (verb === "flow") {
     if (arg === "night") return coachStartFlow("night", minOfDay(now()) >= 270 && minOfDay(now()) < hhmmToMin(cfgNow().night.morningWakeEarliest) ? "early" : "gate");
     if (arg === "nap") return coachStartFlow("nap", "naproutine");
@@ -4981,7 +4949,6 @@ async function onCoachChange(e) {
     if (i.p && i.n >= 1 && !i.morning) { coachToast("Changing the plan only works 6 AM–noon. Decide in the morning."); e.target.value = i.p.startDate || ""; return; }
     await saveCoachPlan({ ...(coachState.plan || {}), startDate: e.target.value });
   }
-  if (e.target.id === "co-speak") coachLS.set(COACH.speakKey, e.target.checked);
   if (e.target.id === "co-dim") { coachLS.set(COACH.dimKey, e.target.checked); renderCoach(); }
 }
 function onCoachSubmit(e) {

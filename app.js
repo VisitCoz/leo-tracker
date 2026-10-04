@@ -696,7 +696,6 @@ async function loadEvents() {
   renderSummary();   // data-driven: only redraw on change, not every second
   renderLog("log-list");       // old Home log (kept)
   renderLog("leo-log-list");   // Leo home log — data-driven, not per-second
-  renderNaps();                // nap dots + list
   renderDay();                 // second home — the day's naps, data-driven too
   renderAlerts();
   // The day bar / budget / night patterns live under Training → Patterns now, and
@@ -761,7 +760,7 @@ async function saveOverrides(next) {
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
   await writeResolvedIfChanged(true);
-  renderSettings(); renderNaps(); renderAlerts(true); render(); if (tabOpen("sleep")) renderSleep();
+  renderSettings(); renderAlerts(true); render(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Weight/height measurements (separate table, mirrors loadEvents).
@@ -1322,7 +1321,6 @@ function render() {
     if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
     if (trainView === "patterns") tickNow();   // moves ONE element
   }
-  if (tabOpen("leo")) tickRing();          // one rotation, nothing rebuilt
   if (tabOpen("day")) tickDay();           // one number, nothing rebuilt
   if (coachOpen()) tickCoach();            // timers as text; rebuilds only when a threshold flips
 }
@@ -1738,7 +1736,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "leo")      { renderLeoWake(); renderNaps(); renderAlerts(true); }
+  if (name === "leo")      { renderLeoWake(); renderAlerts(true); }
   if (name === "day")      renderDay();
   if (name === "grow")     renderGrowth();      // also (re)builds the charts now the canvas is visible
   if (name === "food")     renderFood();
@@ -2810,10 +2808,6 @@ function renderLeoWake() {
 
   // Softens every white ~8% and kills the pulse animations. No-op when unchanged.
   document.body.classList.toggle("is-night", ns.isNight);
-  // The 24-hour card used to be hidden here at night, and that put the day's naps
-  // on screen nowhere at 3am — the one hour you want to read how the day that
-  // caused this night went. It stays up now; styles.css mutes its arcs under
-  // body.is-night so the card never lights a dark room.
 
   // By day the card is two clocks the same size (Mike, 3 Oct): awake or napping on
   // the left, time since his last full feed on the right. Every other state, the
@@ -3007,148 +3001,6 @@ function renderLeoWake() {
   const band = $("leo-ww-band");
   band.style.left  = (w.windowMin / scale) * 100 + "%";
   band.style.width = ((w.windowMax - w.windowMin) / scale) * 100 + "%";
-}
-
-// ---- The 24-hour ring ------------------------------------------------
-// Every sleep in the last 24h, placed by TIME OF DAY on a clock face. Last night
-// is the big arc; naps are the small ones. Crucially it does not care which
-// calendar day a sleep started on — which is exactly why the night used to
-// disappear from the home screen at 6am.
-const RING_C = 2 * Math.PI * 70;   // circumference at r=70
-
-function ringSegments(t) {
-  const T = t || now();
-  const from = T.getTime() - 86400000;
-  const out = [];
-  for (const e of events) {
-    if (e.type !== "sleep") continue;
-    const kind = isNightRow(e) ? "night" : "nap";
-    for (const [a, b] of sleepSegments(e, T.getTime())) {
-      let cur = Math.max(a, from);
-      const end = Math.min(b, T.getTime());
-      // A segment crossing midnight has to be cut, or it would wrap the ring.
-      while (cur < end) {
-        const d = new Date(cur);
-        const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
-        const chunk = Math.min(end, midnight);
-        out.push({ kind, from: minOfDay(d), to: minOfDay(d) + (chunk - cur) / 60000 });
-        cur = chunk;
-      }
-    }
-  }
-  return out;
-}
-
-// Sleep in the last rolling 24h, split night vs nap — the two tile numbers.
-function ringTotals(t) {
-  let night = 0, nap = 0;
-  for (const s of ringSegments(t)) {
-    if (s.kind === "night") night += s.to - s.from; else nap += s.to - s.from;
-  }
-  return { nightMin: Math.round(night), napMin: Math.round(nap) };
-}
-
-function renderRing() {
-  const svg = $("leo-ring");
-  if (!svg) return;
-  const cfg = cfgNow();
-  const T = now();
-  const w = wakeState(null, cfg, T);
-  const ns = nightState(null, cfg, T);
-
-  const arc = (fromMin, toMin, cls, extra) => {
-    const len = Math.max(0.6, ((toMin - fromMin) / 1440) * RING_C);
-    return `<circle cx="90" cy="90" r="70" class="${cls}" ${extra || ""} ` +
-           `stroke-dasharray="${len.toFixed(2)} ${RING_C.toFixed(2)}" ` +
-           `stroke-dashoffset="${(-(fromMin / 1440) * RING_C).toFixed(2)}"></circle>`;
-  };
-
-  let html = "";
-  for (const s of ringSegments(T)) html += arc(s.from, s.to, `ring-${s.kind}`);
-  // Where the next sleep is predicted to land — dashed, so it reads as "not yet".
-  if (!w.asleep && w.opensAt) {
-    const a = minOfDay(w.opensAt), b = minOfDay(w.closesAt);
-    if (b > a) html += arc(a, b, "ring-next");
-  }
-  $("leo-ring-arcs").innerHTML = html;
-  tickRing();
-
-  // The centre deliberately does NOT repeat the big timer above it — it answers
-  // the one thing that card doesn't: what happens next.
-  let lab = "next sleep", val = "—";
-  if (ns.isNight) {
-    lab = "morning at"; val = plFmt(hhmmToMin(cfg.night.morningWakeEarliest));
-  } else if (w.asleep) {
-    lab = "wake by"; val = plFmt(hhmmToMin(cfg.naps.lastNapCutoff));
-  } else if (w.opensAt) {
-    val = clockTime(w.opensAt).replace(/\s?[AP]M/, "");
-  }
-  $("leo-ring-lab").textContent = lab;
-  $("leo-ring-val").textContent = val;
-
-  const tot = ringTotals(T);
-  $("leo-ring-night").textContent = tot.nightMin ? plDur(tot.nightMin) : "—";
-  $("leo-ring-night-lab").textContent = tot.nightMin ? "night sleep" : "no night logged";
-  $("leo-ring-naps").textContent = plDur(tot.napMin);
-  $("leo-ring-naps-lab").textContent = "naps";
-  $("leo-naps-total").textContent = plDur(tot.nightMin + tot.napMin) + " asleep";
-}
-
-// The only thing that moves every second: one rotation.
-function tickRing() {
-  const hand = $("leo-ring-hand");
-  if (hand) hand.setAttribute("transform", `rotate(${(minOfDay(now()) / 1440) * 360} 90 90)`);
-}
-
-// ---- Naps. Answers "how many is he supposed to have" with hollow dots, and
-// says it in words underneath — the old pip row printed "1 of 2–3 naps" with
-// nothing telling you that was a target.
-function renderNaps() {
-  const host = $("leo-nap-pips");
-  if (!host) return;
-  renderRing();
-  const cfg = cfgNow();
-  // WHICH day the dots and the list are about. The ring itself is rolling-24h and
-  // needs no help, but sleepDayStats() clips to the CALENDAR day — so at 3:16am it
-  // would print "No naps yet today" underneath a ring full of yesterday's arcs. At
-  // night the day worth reading is the one that just ended, which is the anchor
-  // nightState() already holds.
-  const T = now();
-  const ns = nightState(null, cfg, T);
-  const lookBack = ns.isNight && ns.anchorDate.toDateString() !== T.toDateString();
-  const st = sleepDayStats(null, lookBack
-    ? new Date(ns.anchorDate.getFullYear(), ns.anchorDate.getMonth(), ns.anchorDate.getDate(), 23, 59, 59)
-    : T);
-  const cap = cfg.naps.maxCount;
-
-  let dots = "";
-  for (let i = 0; i < Math.max(cap, st.napCount); i++) {
-    dots += `<span class="nap-dot${i < st.napCount ? (i >= cap ? " over" : " on") : ""}"></span>`;
-  }
-  host.innerHTML = dots;
-  // The card header belongs to renderRing() now — it shows the 24h total, not
-  // just naps. Setting it here as well just clobbered it.
-  $("leo-naps-why").textContent = st.napCount > cap
-    ? `That's more than usual — ${napRange(cfg, cap)} naps a day is the target at ${cfg.band}.`
-    : `He usually has ${napRange(cfg, cap)} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
-
-  const ord = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
-  $("leo-naps-list").innerHTML = st.naps.length
-    ? st.naps.map((b, i) =>
-        `<span class="nap-item"><b>${ord[i] || i + 1}</b> ${clockTime(b.startAt)} · ` +
-        `${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
-    : `<span class="nap-item muted">${lookBack ? "No naps logged that day." : "No naps yet today."}</span>`;
-
-  const w = wakeState(null, cfg);
-  // At night the hero card and the ring centre already answer "what happens next",
-  // so a nap-window sentence here at 3am is noise on the one screen that must stay calm.
-  $("leo-naps-next").textContent = ns.isNight
-    ? ""
-    : w.asleep
-      ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
-      : w.opensAt
-        ? `Next nap window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}. Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}.`
-        : "";
 }
 
 // ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,
@@ -3510,7 +3362,7 @@ async function onSettingsChanged(payload) {
   if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
-  render(); renderNaps(); renderAlerts(true); renderSettings(); if (tabOpen("sleep")) renderSleep();
+  render(); renderAlerts(true); renderSettings(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Minutes get a number box, clock times get a time box. Deliberately not sliders:
@@ -5211,7 +5063,7 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
 function _redrawAll() {
-  render(); renderNaps(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
+  render(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
   coachRefresh();
 }

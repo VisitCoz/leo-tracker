@@ -4315,6 +4315,10 @@ function coachGate(t) {
     const from = anchor - COACH.routineFeedLeadMin * 60000;
     if (!last || last.getTime() < from) return { known: false, ns };
   } else {
+    // Once the bedtime routine starts it says FEED OK (Mike, 3 Oct): the routine
+    // starts with the feed, and on a short-nap day that is still day-card time.
+    const d = coachDay(T);
+    if (d.kind === "bed" && T >= d.routine) return { known: true, open: true, why: "bedtime routine, feed first", last, sinceMin: last ? (T - last) / 60000 : null, ns };
     // The first full feed after he's up for the day is always OK (Mike, 3 Oct): it
     // says so until that feed is logged, then the hours count from it.
     const up = sleepDayStats(null, T).blocks.filter((b) => b.kind === "night" && b.endAt && b.endAt <= T).pop();

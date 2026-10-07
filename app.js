@@ -2308,7 +2308,7 @@ function trainFeedsHTML() {
     ${gate.known ? `<div class="tr-gate-num">${gate.why || (gate.open
       ? `since ${clockTime(gate.opens)}`
       : `opens ${clockTime(gate.opens)}`)}</div>
-    <p class="tr-gate-n">${gate.last ? `Last full feed ended ${clockTime(gate.last)}. ` : ""}${gate.open
+    <p class="tr-gate-n">${gate.last ? `Last full feed ended ${clockTime(gate.last)}. ` : ""}${!gate.ns.isNight ? "" : gate.open
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>

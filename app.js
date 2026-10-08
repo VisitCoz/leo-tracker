@@ -4991,6 +4991,7 @@ const CRY = {
   endAfterQuietSec: 60,    // a full minute without crying ends the spell and saves it
   preRollSec: 15,          // every recording starts at least this long before the cry was confirmed
   minGapSec: 60,           // a pause in listening shorter than this isn't logged
+  keepNights: 14,          // recordings older than this delete themselves; the rows stay (Q3 a)
   bitsPerSecond: 24000,    // voice quality, about 11 MB per hour of crying
 };
 const CRY_KEY = "leo_cry_listen";   // this phone's listening: { from, heard, on } (ms)
@@ -5322,6 +5323,7 @@ async function crySpellEnd() {
     } catch (_) { id = null; }   // no storage (private window): the times still reach the log
   }
   await cryInsert({ type: "cry", start_at: cryIso(s.startAt), end_at: cryIso(s.lastLoud), note: id ? `clip=${id}` : null });
+  cryCleanup();
 }
 
 // ---- Screens ----------------------------------------------------------------------
@@ -5438,11 +5440,32 @@ function renderCryButtons(ns) {
 // ---- In the log. ▶ plays on the phone that has the recording; the other phone
 // shows 🔒 (Q1 a: the sound never leaves the phone that listened). 🗑 removes the
 // row and, on this phone, its recording.
-const cryHave = (e) => { const id = cryClipId(e); return id && cryClips.has(id) ? "play" : "lock"; };
+// Once a recording has deleted itself (older than CRY.keepNights) there is nothing
+// to play anywhere, so neither phone shows ▶ or 🔒 for it — the row and its times stay.
+const cryKeepFrom = (T) => cryNightFrom(T.getTime()) - (CRY.keepNights - 1) * 86400000;
+function cryHave(e) {
+  const id = cryClipId(e);
+  if (id && cryClips.has(id)) return "play";
+  return new Date(e.start_at).getTime() >= cryKeepFrom(now()) ? "lock" : "gone";
+}
+// Q3 a: the last 14 nights. Runs at start and after every saved spell; the log's
+// rows are never touched.
+async function cryCleanup(T) {
+  const from = cryKeepFrom(T || now());
+  let n = 0;
+  for (const [id, c] of [...cryClips]) {
+    if (c.at >= from) continue;
+    try { await cryDB.del(id); } catch (_) { continue; }
+    cryClips.delete(id);
+    n++;
+  }
+  return n;
+}
 // What this phone holds, read once at start. The sound itself stays on disk.
 cryDB.all()
   .then((all) => { for (const c of all) cryClips.set(c.id, { at: c.at, durMs: c.durMs }); })
   .catch(() => {})
+  .then(() => cryCleanup())
   .then(() => renderLog("leo-log-list"));
 
 const cryAudio = new Audio();
@@ -5552,7 +5575,8 @@ function cryPlaybackHTML() {
     const id = cryClipId(e), have = cryHave(e), t0 = new Date(e.start_at), t1 = new Date(e.end_at);
     return `<li class="pb-row"${have === "play" ? ` data-pb="${id}"` : ""}>`
       + (have === "play" ? `<button class="pb-play" data-act="play" data-clip="${id}" aria-label="Play">▶</button>`
-        : `<span class="play-off pb-lock" title="The recording is on the phone that listened">🔒</span>`)
+        : have === "lock" ? `<span class="play-off pb-lock" title="The recording is on the phone that listened">🔒</span>`
+        : `<span class="pb-lock"></span>`)
       + `<div class="pb-body"><div class="pb-span">${crySpan(t0, t1, " – ")}</div>`
       + (have === "play" ? `<div class="pb-bar" data-act="seek" data-clip="${id}"><i></i></div><div class="pb-time"><span class="el">0:00</span> / ${mmss(cryClips.get(id).durMs)}</div>` : "")
       + `</div><div class="pb-len">${dur(t1 - t0)}</div></li>`;

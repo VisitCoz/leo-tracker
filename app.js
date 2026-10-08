@@ -5704,6 +5704,15 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.at("17:25")
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
+//
+// The cry listener, with no baby and no microphone — same detector, same recorder,
+// same rows; only the sound is made up, and its rows stay in memory:
+//   leoDebug.fakeMic()     → then tap 🎙️ Listen for crying: it hears a white-noise room
+//   leoDebug.fakeCry(8)    → he cries for 8 s (5 s starts a recording; a quiet minute saves it)
+//   leoDebug.fakeGap(20)   → the app leaves the screen for 20 minutes, then comes back
+//   leoDebug.fakeMicStop() → the microphone goes away ("Not listening")
+//   leoDebug.cryClips()    → the recordings on this phone
+//   leoDebug.cryCleanup(14) → the 14-night clean-up, run as if 14 nights from now
 function _redrawAll() {
   render(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
@@ -5779,6 +5788,62 @@ window.leoDebug = {
     try { localStorage.removeItem(ALERT_DISMISS_KEY); } catch (e) {}
     renderAlerts(true);
     return "dismissals cleared";
+  },
+  // A generated room: steady white noise, plus a loud warbling "cry" while fakeCry
+  // runs — 2.7 s of sobbing, then a 0.7 s breath, like the mockup's picture.
+  fakeMic() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = ctx.createMediaStreamDestination();
+    const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.03;
+    const room = ctx.createBufferSource();
+    room.buffer = buf; room.loop = true; room.connect(dest); room.start();
+    const osc = ctx.createOscillator(), vol = ctx.createGain();
+    osc.type = "sawtooth"; vol.gain.value = 0;
+    osc.connect(vol); vol.connect(dest); osc.start();
+    let timer = null;
+    cryFake = {
+      ctx, dest,
+      cry(on) {
+        clearInterval(timer);
+        vol.gain.value = 0;
+        if (!on) return;
+        let t = 0;
+        timer = setInterval(() => {
+          t = (t + 0.1) % 3.4;
+          vol.gain.value = t < 2.7 ? 0.4 : 0;
+          osc.frequency.value = 420 + 80 * Math.sin(t * 6);
+        }, 100);
+      },
+    };
+    return "fake microphone ready — tap 🎙️ Listen for crying. Its rows stay in memory.";
+  },
+  fakeCry(sec) {
+    if (!cryFake) return "run leoDebug.fakeMic() first";
+    cryFake.cry(true);
+    setTimeout(() => cryFake.cry(false), (sec || 8) * 1000);
+    return `crying for ${sec || 8} s — recording starts after ${CRY.startAfterLoudSec} s, saved after ${CRY.endAfterQuietSec} s of quiet`;
+  },
+  // Exactly what the app does when it leaves the screen and comes back, with the
+  // clock moved on in between.
+  async fakeGap(min) {
+    await cryHearingOff("the app left the screen");
+    TIME_SHIFT_MS += (min || 20) * 60000;
+    await cryComeBack();
+    return `away ${min || 20} min — now() = ${now().toLocaleString()}`;
+  },
+  fakeMicStop() {
+    const t = cry.stream && cry.stream.getAudioTracks()[0];
+    if (!t) return "not listening";
+    t.stop();
+    t.dispatchEvent(new Event("ended"));   // what a real microphone that goes away fires
+    return "microphone gone";
+  },
+  cryClips() { return [...cryClips].map(([id, c]) => ({ id, at: new Date(c.at).toLocaleString(), seconds: Math.round(c.durMs / 1000) })); },
+  async cryCleanup(nights) {
+    const n = await cryCleanup(new Date(now().getTime() + (nights || 0) * 86400000));
+    renderLog("leo-log-list");
+    return `${n} recording(s) deleted`;
   },
 };
 

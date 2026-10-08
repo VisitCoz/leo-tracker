@@ -5385,14 +5385,17 @@ const cryListenSig = () => [cryState(), cry.confirm, cryTonight().n, cry.gapFrom
 function cryRender() {
   const host = $("cry-body");
   if (!host || !cryShown()) return;
-  $("cry").classList.toggle("listen", cry.view === "listen");
-  host.innerHTML = cryListenHTML();
-  cry.sig = cryListenSig();
+  const listen = cry.view === "listen";
+  $("cry").classList.toggle("listen", listen);
+  host.innerHTML = listen ? cryListenHTML() : cryPlaybackHTML();
+  cry.sig = listen ? cryListenSig() : cryPlaybackSig();
+  if (!listen) { cryPlayUI(); cryProgress(); }
 }
 // Per second, from render(): the clocks as text. Rebuilt only when the state flips,
 // so "Stop listening" never moves under a thumb.
 function tickCry() {
-  if (cryListenSig() !== cry.sig) { cryRender(); return; }
+  if ((cry.view === "listen" ? cryListenSig() : cryPlaybackSig()) !== cry.sig) { cryRender(); return; }
+  if (cry.view !== "listen") return;
   const t = $("cry-title"), s = $("cry-sum");
   if (t) t.textContent = cryTitle();
   if (s) s.innerHTML = crySum();
@@ -5406,17 +5409,26 @@ function onCryClick(ev) {
   else if (act === "stop-no") { cry.confirm = false; cryRender(); }
   else if (act === "stop-yes" || act === "leave") cryEnd();
   else if (act === "again") cryListen();
+  else if (act === "play") cryPlay(t.dataset.clip);
+  else if (act === "seek") {
+    const r = t.getBoundingClientRect();
+    cryPlay(t.dataset.clip, Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)));
+  }
 }
 
 // The night card's button: shown at night, and whenever this phone is listening.
+// By day, until noon: "Last night: 40m crying · Listen ›", which opens the playback.
 let _cryBtnSig = null;
 function renderCryButtons(ns) {
-  const btn = $("leo-listen-btn");
-  if (!btn) return;
+  const btn = $("leo-listen-btn"), last = $("leo-cry-last-btn");
+  if (!btn || !last) return;
   const show = ns.isNight || cry.on;
-  const sig = `${show}:${cry.on}:${cry.hearing}:${cry.from}:${cry.gapFrom}`;
+  const spells = !ns.isNight && minOfDay(now()) < 720 ? cryRowsOfNight(now()).filter(isCrySpell) : [];
+  const sig = `${show}:${cry.on}:${cry.hearing}:${cry.from}:${cry.gapFrom}:${spells.length}:${cryTotal(spells)}`;
   if (sig === _cryBtnSig) return;
   _cryBtnSig = sig;
+  last.classList.toggle("hidden", !spells.length);
+  last.innerHTML = `🎧 Last night: ${dur(cryTotal(spells))} crying <span>· Listen ›</span>`;
   btn.classList.toggle("hidden", !show);
   btn.innerHTML = cry.on && cry.hearing ? `🎙️ Listening for crying <span>· since ${clockTime(new Date(cry.from))}</span>`
     : cry.on && cry.gapFrom != null ? `🎙️ Not listening <span>· stopped at ${clockTime(new Date(cry.gapFrom))}</span>`
@@ -5434,16 +5446,21 @@ cryDB.all()
   .then(() => renderLog("leo-log-list"));
 
 const cryAudio = new Audio();
-async function cryPlay(id) {
+async function cryPlay(id, frac) {
   const a = cryAudio;
   if (id === cry.playing) {
-    if (!a.paused) { a.pause(); return; }
+    if (frac == null && !a.paused) { a.pause(); return; }
   } else {
     const clip = await cryDB.get(id).catch(() => null);
     if (!clip) return;
     if (a.src) URL.revokeObjectURL(a.src);
     a.src = URL.createObjectURL(clip.blob);
     cry.playing = id;
+  }
+  if (frac != null) {   // a tap along the bar: skip to there
+    const to = frac * cryClips.get(id).durMs / 1000;
+    if (a.readyState >= 1) a.currentTime = to;
+    else a.addEventListener("loadedmetadata", () => { a.currentTime = to; }, { once: true });
   }
   a.play().catch(() => {});
 }
@@ -5454,8 +5471,19 @@ function cryPlayUI() {
     b.textContent = me ? "⏸" : "▶";
     b.classList.toggle("on", me);
   });
+  document.querySelectorAll(".pb-row[data-pb]").forEach((r) => r.classList.toggle("on", on && r.dataset.pb === cry.playing));
+}
+// The morning playback's bar and "1:12 / 9:20". The clip's length is our own
+// measure: a phone's recording doesn't say how long it is until it has played.
+function cryProgress() {
+  const id = cry.playing, c = id && cryClips.get(id);
+  const row = c && document.querySelector(`.pb-row[data-pb="${id}"]`);
+  if (!row) return;
+  row.querySelector(".pb-bar i").style.width = Math.min(100, cryAudio.currentTime * 100000 / c.durMs) + "%";
+  row.querySelector(".el").textContent = mmss(cryAudio.currentTime * 1000);
 }
 ["play", "pause", "ended"].forEach((ev) => cryAudio.addEventListener(ev, cryPlayUI));
+cryAudio.addEventListener("timeupdate", cryProgress);
 
 function cryPlayEl(e) {
   const id = cryClipId(e), have = cryHave(e);
@@ -5508,6 +5536,39 @@ async function cryRemove(e) {
   if (cryFake) { events = events.filter((x) => x.id !== e.id); _redrawAll(); return; }
   await deleteEvent(e.id);
 }
+// ---- The morning playback: last night's spells, oldest first so it reads like the
+// night, each with ▶ and its length; the gaps under them. The app doesn't sort,
+// label or judge them — the parents listen and decide.
+function cryPlaybackHTML() {
+  const T = now(), ns = nightState(null, null, T);
+  const rows = cryRowsOfNight(T), spells = rows.filter(isCrySpell), gaps = rows.filter(isCryGap);
+  const a = ns.anchorDate, b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 1);
+  const day = (d) => `${d.toLocaleDateString([], { weekday: "short" })} ${d.getDate()}`;
+  const rec = coachLS.get(CRY_KEY, null);
+  const listened = !rec || !rec.from || cryNightFrom(rec.from) !== cryNightFrom(T.getTime()) ? ""
+    : cry.on && cry.hearing ? ` · listening since ${clockTime(new Date(rec.from))}`
+    : ` · listened ${crySpan(new Date(rec.from), new Date(rec.heard), " – ")}`;
+  const row = (e) => {
+    const id = cryClipId(e), have = cryHave(e), t0 = new Date(e.start_at), t1 = new Date(e.end_at);
+    return `<li class="pb-row"${have === "play" ? ` data-pb="${id}"` : ""}>`
+      + (have === "play" ? `<button class="pb-play" data-act="play" data-clip="${id}" aria-label="Play">▶</button>`
+        : `<span class="play-off pb-lock" title="The recording is on the phone that listened">🔒</span>`)
+      + `<div class="pb-body"><div class="pb-span">${crySpan(t0, t1, " – ")}</div>`
+      + (have === "play" ? `<div class="pb-bar" data-act="seek" data-clip="${id}"><i></i></div><div class="pb-time"><span class="el">0:00</span> / ${mmss(cryClips.get(id).durMs)}</div>` : "")
+      + `</div><div class="pb-len">${dur(t1 - t0)}</div></li>`;
+  };
+  return `<div class="pb">
+    <button class="pb-back" data-act="close">‹ Leo</button>
+    <h2>${ns.isNight ? "Tonight's crying" : "Last night's crying"}</h2>
+    <p class="pb-sub">${day(a)} → ${day(b)} ${b.toLocaleDateString([], { month: "short" })}${listened}</p>
+    <div class="pb-sum"><b>${dur(cryTotal(spells))}</b><span>of crying, in ${spells.length} spell${spells.length === 1 ? "" : "s"}</span></div>
+    ${spells.length ? `<ul class="pb-list">${spells.map(row).join("")}</ul>` : `<p class="pb-note">No crying was heard ${ns.isNight ? "tonight" : "last night"}.</p>`}
+    ${spells.some((e) => cryHave(e) === "lock") ? `<p class="pb-note">🔒 The recordings are on the phone that listened.</p>` : ""}
+    ${gaps.map((g) => `<div class="gap-row"><span>◌</span><span><b>Not listening ${crySpan(new Date(g.start_at), new Date(g.end_at), " – ")}</b>${g.note ? ` · ${coEsc(g.note)}` : ""}. Any crying then wasn't heard.</span></div>`).join("")}
+  </div>`;
+}
+const cryPlaybackSig = () => ["pb", cryRowsOfNight(now()).map((e) => e.id).join(), cryClips.size, cry.hearing].join("|");
+
 // "😢 Crying tonight 21m in 3 spells", at the top of tonight's log.
 function renderCryTotal(show) {
   const el = $("leo-cry-total");
@@ -5579,6 +5640,7 @@ $("coach").addEventListener("submit", onCoachSubmit);
 // Cry listener: the night card's button, the full-screen listener, and the app
 // leaving / coming back to the screen.
 $("leo-listen-btn").addEventListener("click", () => cryOpen("listen"));
+$("leo-cry-last-btn").addEventListener("click", () => cryOpen("playback"));
 $("cry").addEventListener("click", onCryClick);
 document.addEventListener("visibilitychange", cryVisibility);
 $("grow-save").addEventListener("click", saveGrowth);

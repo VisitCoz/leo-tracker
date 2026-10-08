@@ -103,6 +103,8 @@
         <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
         <!-- Static sibling, never inside #leo-sleep-actions: that host is wiped on every state change. -->
         <button id="leo-coach-btn" class="coach-launch" type="button">🧭 Coach <span>· what do we do now?</span></button>
+        <!-- Cry listener: at night, "Listen for crying". Static, like the Coach button. -->
+        <button id="leo-listen-btn" class="coach-launch hidden" type="button"></button>
       </section>
 
       <!-- 3. The log. At night this is scoped to the night and titled "Tonight" —
@@ -304,6 +306,11 @@
     <div id="coach" class="hidden" role="dialog" aria-modal="true" aria-label="Coach">
       <div id="coach-body" class="co-wrap"></div>
       <div id="coach-toast" class="co-toast hidden" role="status" aria-live="polite"></div>
+    </div>
+
+    <!-- ============ CRY LISTENER — full-screen: the listening screen (almost black) and the morning playback ============ -->
+    <div id="cry" class="hidden" role="dialog" aria-modal="true" aria-label="Listening for crying">
+      <div id="cry-body" class="cry-wrap"></div>
     </div>
 
     <!-- ============ BOTTOM NAV ============ -->

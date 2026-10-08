@@ -1136,3 +1136,16 @@ body.cry-on { overflow: hidden; }
 #cry .cry-sheet .yes { background: var(--cn-gold); color: var(--cn-btn-ink); border: none; border-radius: 14px; min-height: 54px; font: 800 16px "Mulish", sans-serif; cursor: pointer; }
 #cry .cry-sheet .no { background: transparent; color: var(--cn-text); border: 1px solid var(--cn-line); border-radius: 14px; min-height: 54px; font: 700 16px "Mulish", sans-serif; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { #cry .lc-ring .disc { transition: none; } }
+
+/* In the log: the crying rows (▶ on the phone that listened, 🔒 on the other), the
+   night's total, and the grey "Not listening" row. */
+.play-btn { flex: none; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--pink); color: #2a1320; font-size: 13px; font-weight: 700; cursor: pointer; display: grid; place-items: center; }
+.play-btn.on { background: var(--sage); color: #14241c; }
+.play-off { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 1px dashed #4a3a52; color: #8a7690; display: grid; place-items: center; font-size: 13px; }
+.cry-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; background: var(--bg-card-2); border-radius: 12px; padding: 10px 12px; margin: 0 0 8px; }
+.cry-total .t { font-size: 13.5px; color: var(--ink); }
+.cry-total b { font-family: "Fraunces", Georgia, serif; font-size: 22px; font-weight: 600; color: var(--pink); font-variant-numeric: tabular-nums; }
+.cry-total .n { font-size: 12.5px; color: var(--ink-dim); }
+.cry-total .w { flex-basis: 100%; font-size: 12px; color: #8a7690; margin-top: 2px; }
+.log-item.gap { color: var(--ink-dim); }
+.log-item.gap .log-title { font-weight: 500; font-size: 13.5px; }

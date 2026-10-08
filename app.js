@@ -1518,6 +1518,7 @@ function renderLog(listId) {
     // the screen the moment it flipped to day mode at 6am.
     today = events.filter((e) => isToday(e.start_at) || (e.end_at && isToday(e.end_at)));
   }
+  if (listId === "leo-log-list") renderCryTotal(nightScoped);
   if (today.length === 0) {
     list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged today or tonight yet." : "No entries yet today."}</li>`;
     return;
@@ -1525,6 +1526,8 @@ function renderLog(listId) {
 
   list.innerHTML = "";
   for (const e of today) {
+    // The cry listener's rows have their own look: ▶ or 🔒, and 🗑, no ✏️.
+    if (isCrySpell(e) || isCryGap(e)) { list.appendChild(cryLogRow(e)); continue; }
     const li = document.createElement("li");
     li.className = "log-item";
 
@@ -5006,6 +5009,7 @@ const cry = {
   gapFrom: null,      // when the phone stopped hearing
   offWhy: "",         // …and why, in plain words
   view: "listen", confirm: false, sig: "",
+  playing: null,      // the recording loaded in the player
 };
 const cryShown = () => { const el = $("cry"); return !!el && !el.classList.contains("hidden"); };
 const cryIso = (ms) => new Date(ms).toISOString();
@@ -5417,6 +5421,103 @@ function renderCryButtons(ns) {
   btn.innerHTML = cry.on && cry.hearing ? `🎙️ Listening for crying <span>· since ${clockTime(new Date(cry.from))}</span>`
     : cry.on && cry.gapFrom != null ? `🎙️ Not listening <span>· stopped at ${clockTime(new Date(cry.gapFrom))}</span>`
     : `🎙️ Listen for crying <span>· all night</span>`;
+}
+
+// ---- In the log. ▶ plays on the phone that has the recording; the other phone
+// shows 🔒 (Q1 a: the sound never leaves the phone that listened). 🗑 removes the
+// row and, on this phone, its recording.
+const cryHave = (e) => { const id = cryClipId(e); return id && cryClips.has(id) ? "play" : "lock"; };
+// What this phone holds, read once at start. The sound itself stays on disk.
+cryDB.all()
+  .then((all) => { for (const c of all) cryClips.set(c.id, { at: c.at, durMs: c.durMs }); })
+  .catch(() => {})
+  .then(() => renderLog("leo-log-list"));
+
+const cryAudio = new Audio();
+async function cryPlay(id) {
+  const a = cryAudio;
+  if (id === cry.playing) {
+    if (!a.paused) { a.pause(); return; }
+  } else {
+    const clip = await cryDB.get(id).catch(() => null);
+    if (!clip) return;
+    if (a.src) URL.revokeObjectURL(a.src);
+    a.src = URL.createObjectURL(clip.blob);
+    cry.playing = id;
+  }
+  a.play().catch(() => {});
+}
+function cryPlayUI() {
+  const on = !!cry.playing && !cryAudio.paused;
+  document.querySelectorAll("button[data-clip]").forEach((b) => {
+    const me = on && b.dataset.clip === cry.playing;
+    b.textContent = me ? "⏸" : "▶";
+    b.classList.toggle("on", me);
+  });
+}
+["play", "pause", "ended"].forEach((ev) => cryAudio.addEventListener(ev, cryPlayUI));
+
+function cryPlayEl(e) {
+  const id = cryClipId(e), have = cryHave(e);
+  if (have === "play") {
+    const b = document.createElement("button");
+    b.className = "play-btn";
+    b.dataset.clip = id;
+    b.setAttribute("aria-label", "Play");
+    const playing = cry.playing === id && !cryAudio.paused;   // the log redraws while it plays
+    b.textContent = playing ? "⏸" : "▶";
+    b.classList.toggle("on", playing);
+    b.addEventListener("click", () => cryPlay(id));
+    return b;
+  }
+  const s = document.createElement("span");
+  if (have === "lock") { s.className = "play-off"; s.textContent = "🔒"; s.title = "The recording is on the phone that listened"; }
+  return s;
+}
+function cryLogRow(e) {
+  const gap = isCryGap(e);
+  const a = new Date(e.start_at), b = new Date(e.end_at || e.start_at);
+  const li = document.createElement("li");
+  li.className = `log-item ${gap ? "gap" : "cry"}`;
+  li.innerHTML = `<span class="log-emoji">${gap ? "◌" : "😢"}</span><div class="log-body"><div class="log-title"></div></div>`;
+  li.querySelector(".log-title").textContent = gap
+    ? `Not listening ${crySpan(a, b, "–")}${e.note ? ` · ${e.note}` : ""}`
+    : `Cried ${crySpan(a, b, "–")} · ${dur(b - a)}`;
+  if (!gap) li.appendChild(cryPlayEl(e));
+  // Same inline two-step confirm as every other row — never browser confirm().
+  const del = document.createElement("button");
+  del.className = "del-btn"; del.textContent = "🗑";
+  del.addEventListener("click", () => {
+    const wrap = document.createElement("span");
+    wrap.className = "del-confirm";
+    wrap.innerHTML = `<button class="del-yes">Delete</button><button class="del-no">Keep</button>`;
+    del.replaceWith(wrap);
+    wrap.querySelector(".del-yes").addEventListener("click", () => cryRemove(e));
+    wrap.querySelector(".del-no").addEventListener("click", () => wrap.replaceWith(del));
+  });
+  li.appendChild(del);
+  return li;
+}
+async function cryRemove(e) {
+  const id = cryClipId(e);
+  if (id && cryClips.has(id)) {
+    if (cry.playing === id) { cryAudio.pause(); cry.playing = null; }
+    try { await cryDB.del(id); } catch (_) {}
+    cryClips.delete(id);
+  }
+  if (cryFake) { events = events.filter((x) => x.id !== e.id); _redrawAll(); return; }
+  await deleteEvent(e.id);
+}
+// "😢 Crying tonight 21m in 3 spells", at the top of tonight's log.
+function renderCryTotal(show) {
+  const el = $("leo-cry-total");
+  if (!el) return;
+  const spells = show ? cryRowsOfNight(now()).filter(isCrySpell) : [];
+  el.classList.toggle("hidden", !spells.length);
+  if (!spells.length) return;
+  const locked = spells.some((e) => cryHave(e) === "lock");
+  el.innerHTML = `<span class="t">😢 Crying tonight</span><b>${dur(cryTotal(spells))}</b><span class="n">in ${spells.length} spell${spells.length === 1 ? "" : "s"}</span>`
+    + (locked ? `<span class="w">🔒 The recordings are on the phone that listened.</span>` : "");
 }
 
 function cryVisibility() {

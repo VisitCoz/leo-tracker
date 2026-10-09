@@ -139,6 +139,32 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .ww-fill  { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: currentColor; opacity: .75; transition: width .4s ease; }
 .ww-band  { position: absolute; top: -3px; bottom: -3px; border-radius: 6px;
   border: 1px dashed rgba(255,255,255,.5); background: rgba(255,255,255,.07); }
+
+/* ---------- By day: two clocks, the same size ----------
+   Awake time and time since his last full feed side by side, FEED OK / NO FEED YET
+   under the second (Mike, 3 Oct). The night card keeps its one big clock. */
+.lb-two { display: grid; grid-template-columns: 1fr 1fr; }
+.lb-c { padding: 0 8px; min-width: 0; }
+.lb-c + .lb-c { border-left: 1px solid rgba(255,255,255,.14); }
+.lb-c .card-eyebrow { font-size: 11.5px; letter-spacing: .05em; white-space: nowrap; }
+.lb-num { font-family: "Fraunces", serif; font-size: 34px; font-weight: 600; line-height: 1.05;
+  margin: 7px 0 5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lb-num .hero-sec { font-size: 14px; margin-left: 3px; }
+.lb-num .hero-sec.solo { font-size: 34px; margin-left: 0; opacity: 1; }
+.lb-ans { margin: 0; font-size: 14px; line-height: 1.3; min-height: 38px; }
+.lb-sub { display: block; font-size: 12px; opacity: .7; margin-top: 2px; line-height: 1.3; }
+.lb .ww-track, .lb .fbar { margin: 10px 2px 14px; }
+/* Napping, or nothing to count yet: the bar stays, faded and empty, so the two
+   columns keep the same shape. */
+.ww-track.idle, .fbar.idle { opacity: .35; }
+.ww-track.idle > * { display: none; }
+/* The feed bar fills toward the gate mark at 75%, sage once it says FEED OK. */
+.fbar { position: relative; height: 6px; border-radius: 999px; background: rgba(0,0,0,.3); }
+.fbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: currentColor; opacity: .55; }
+.fbar.open i { background: var(--sage); opacity: .95; }
+.fbar em { position: absolute; left: 75%; top: -4px; bottom: -4px; width: 2px; margin-left: -1px;
+  background: rgba(255,255,255,.6); border-radius: 1px; }
+.fbar small { position: absolute; left: 75%; top: 8px; transform: translateX(-50%); font-size: 10px; opacity: .65; line-height: 1; }
 .leo-sleep-actions { display: flex; gap: 8px; }
 .leo-sleep-actions .btn { flex: 1; }
 /* Night: the big "He woke up" with the quiet morning exit under it, and the
@@ -298,7 +324,6 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 
 /* Next-feed prediction (gentle guideline, not an alarm) */
 .next-feed { margin: 0 0 6px; font-size: 14px; color: var(--sage); }
-.next-feed.due { color: var(--amber); font-weight: 600; }
 
 /* Edit modal fields */
 .edit-field { margin-top: 8px; }
@@ -611,58 +636,6 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .leo-lg.bed { background: rgba(127,159,214,.35); border: 1px dashed rgba(127,159,214,.7); }
 .leo-lg.cut { background: var(--amber); width: 3px; border-radius: 1px; }
 .leo-db-legend { flex-wrap: wrap; gap: 6px 14px; }
-
-/* ---- Naps card (home) ----
-   The hollow dots ARE the answer to "how many is he supposed to have". */
-/* ---- 24-hour ring ---- */
-.ring-wrap { display: flex; justify-content: center; margin: 2px 0 4px; }
-.ring { width: 200px; height: 200px; }
-.ring-night { stroke: #5e79ad; }
-.ring-nap   { stroke: var(--sage); }
-/* NB: never set stroke-dasharray here — CSS beats the inline attribute that
-   positions each arc, and the "next" band swallowed the whole ring. Thinner and
-   translucent reads as "not yet" without touching the dash. */
-.ring-next  { stroke: var(--sage-deep); opacity: .55; stroke-width: 7; }
-.ring-lab { fill: var(--ink-dim); font-size: 10.5px; font-family: "Inter", sans-serif; letter-spacing: .09em; text-transform: uppercase; }
-.ring-val { fill: var(--ink); font-size: 25px; font-family: "Fraunces", serif; }
-.ring-tick { fill: #8f8090; font-size: 9.5px; font-family: "Inter", sans-serif; }
-.ring-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 12px; text-align: center; }
-.ring-tiles > div { background: var(--bg-card-2); border-radius: 12px; padding: 11px 8px; }
-.ring-legend { display: flex; gap: 14px; justify-content: center; margin-top: 12px; font-size: 11.5px; color: var(--ink-dim); }
-.rl { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
-.rl.night { background: #5e79ad; }
-.rl.nap { background: var(--sage); }
-.rl.next { background: rgba(94,148,121,.5); border: 1px dashed var(--sage-deep); }
-.rl.now { background: var(--pink); }
-/* Night. This card now STAYS on the home at 3am — it is the only picture of the day
-   that caused the night — so every lit thing in it comes down: muted arcs instead of
-   sage and blue, flat tiles, a dimmed "now" tick. Nothing here changes the dash
-   attributes that position the arcs. */
-body.is-night #leo-naps-card { background: linear-gradient(160deg, #221a28, #1b1320); }
-body.is-night .ring-night { stroke: #3f5377; }
-body.is-night .ring-nap { stroke: #566f60; }
-body.is-night .ring-next { opacity: .28; }
-body.is-night .ring-val { fill: #c9bccd; }
-body.is-night .ring-lab, body.is-night .ring-tick { fill: #7a6d7c; }
-body.is-night .ring-tiles > div { background: #241b2a; }
-body.is-night #leo-ring-hand line { stroke: #8c5f70; }
-body.is-night .nap-dot { border-color: #3f5547; }
-body.is-night .nap-dot.on { background: #566f60; border-color: #566f60; }
-body.is-night .rl.night { background: #3f5377; }
-body.is-night .rl.nap { background: #566f60; }
-body.is-night .rl.now { background: #8c5f70; }
-
-.nap-dots { display: flex; gap: 10px; align-items: center; margin: 2px 0 10px; justify-content: center; }
-.nap-dot {
-  width: 15px; height: 15px; border-radius: 50%;
-  border: 2px solid var(--sage-deep); background: transparent;
-}
-.nap-dot.on { background: var(--sage); border-color: var(--sage); }
-.nap-dot.over { background: var(--amber); border-color: var(--amber); }
-.naps-list { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; font-size: var(--t-note); color: var(--ink-dim); }
-.nap-item b { color: var(--ink); font-weight: 600; margin-right: 4px; }
-.nap-item.muted { opacity: .7; }
-.naps-next { margin: 10px 0 0; font-size: 12.5px; color: var(--ink-dim); line-height: 1.5; }
 
 /* Nap chips carry the text. At 375px a 45-minute nap is 10px wide inside the
    bar — no label was ever going to fit in there. */
@@ -1051,7 +1024,6 @@ body.coach-on { overflow: hidden; }
 #coach .co-step { background: var(--co-surface); border-radius: 20px; padding: 18px; display: grid; gap: 12px; }
 #coach .co-step h3 { font-size: 27px; line-height: 1.15; }
 #coach .co-stephead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-#coach .co-say { border: 1px solid var(--co-line); background: none; border-radius: 10px; min-width: 44px; min-height: 44px; cursor: pointer; color: var(--co-ink); }
 #coach .co-do { font-size: 18px; font-weight: 700; color: var(--co-ink); }
 #coach .co-who { background: var(--co-sage-soft); border-radius: 12px; padding: 10px 12px; font-weight: 700; color: var(--co-ink); }
 #coach .co-dont { background: var(--co-red-soft); border-radius: 12px; padding: 10px 12px; font-size: 15px; color: var(--co-ink); }

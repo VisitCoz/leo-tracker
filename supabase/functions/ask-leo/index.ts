@@ -77,7 +77,7 @@ Reason about developmental stage from his age, which is supplied with every mess
 For months the tracker used a 90-minute wake window that had been correct at 3 months and was an hour short by 6.5 months. It repeatedly told them to put a baby who was not tired down to sleep, and bedtime became a fight they blamed on themselves. Two things follow: total daily sleep ranges INCLUDE night sleep — never suggest adding daytime sleep to reach a 24-hour total — and a bedtime that is calm and correctly timed beats a bedtime that is early. On a short-nap day, earlier IS the correct time — never before the bedtime window opens.
 
 # Feeding
-Breastfed plus some formula. Daytime feeds are not gated. At night he is fed only when the feed gate is open (see the numbers block): Emma feeds him sitting up, then into the crib awake. Gate closed → it isn't hunger: Mike runs the steps. Never end the steps with a feed. 1–2 night feeds are normal at his age; this is not night-weaning.
+Breastfed plus some formula. Day and night he is fed when the feed gate is open (the time is in the numbers block); the home screen shows it as FEED OK / NO FEED YET. Never wake him to feed. At night: Emma feeds him sitting up, then into the crib awake. Gate closed → it isn't hunger: Mike runs the steps. Never end the steps with a feed. 1–2 night feeds are normal at his age; this is not night-weaning.
 
 # Style
 Be warm, concise, and specific. Lead with reassurance when behavior is normal. Give 1–3 concrete, gentle next steps. Use the logged data you're given to personalize. Never use cry-it-out. Keep medical issues with the pediatrician.`;
@@ -149,7 +149,7 @@ Deno.serve(async (req) => {
           `- Wake windows: ${hm(cfg.ww.min)}–${hm(cfg.ww.max)} (typical ${hm(cfg.ww.target)}); first of the day ${hm(cfg.ww.firstOfDay)}, before bed ${hm(cfg.ww.lastOfDay)}.`,
           `- Naps: ${cfg.naps.minCount}–${cfg.naps.maxCount} per day, ${hm(cfg.naps.totalDayMin)}–${hm(cfg.naps.totalDayMax)} of DAY sleep total. No nap past ${cfg.naps.lastNapCutoff}. Under ${cfg.naps.minUsefulNap} min counts as a short nap.`,
           `- Bedtime window ${cfg.night.bedtimeEarliest}–${cfg.night.bedtimeLatest}. Before ${cfg.night.morningWakeEarliest} is still night, not morning.`,
-          `- Night feed gate: ${hm(cfg.night.feedGateMin)} since the last FULL feed (${cfg.feeds.fullMin}+ min at the breast, both sides together, or a ${cfg.feeds.fullMl}+ ml bottle).`,
+          `- Feed gate, day and night: ${hm(cfg.night.feedGateMin)} since the last FULL feed (${cfg.feeds.fullMin}+ min at the breast, both sides together, or a ${cfg.feeds.fullMl}+ ml bottle).`,
           `- Expected night sleep ${hm(cfg.night.expectedNightSleep[0])}–${hm(cfg.night.expectedNightSleep[1])}; ${hm(cfg.totals.healthy24h[0])}–${hm(cfg.totals.healthy24h[1])} per 24h INCLUDING the night.`,
         ].join("\n")
       : "";

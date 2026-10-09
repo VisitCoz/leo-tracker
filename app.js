@@ -696,7 +696,6 @@ async function loadEvents() {
   renderSummary();   // data-driven: only redraw on change, not every second
   renderLog("log-list");       // old Home log (kept)
   renderLog("leo-log-list");   // Leo home log — data-driven, not per-second
-  renderNaps();                // nap dots + list
   renderDay();                 // second home — the day's naps, data-driven too
   renderAlerts();
   // The day bar / budget / night patterns live under Training → Patterns now, and
@@ -761,7 +760,7 @@ async function saveOverrides(next) {
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
   await writeResolvedIfChanged(true);
-  renderSettings(); renderNaps(); renderAlerts(true); render(); if (tabOpen("sleep")) renderSleep();
+  renderSettings(); renderAlerts(true); render(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Weight/height measurements (separate table, mirrors loadEvents).
@@ -1322,7 +1321,6 @@ function render() {
     if (el && b) el.textContent = Math.round((now() - new Date(b.start_at)) / 60000);
     if (trainView === "patterns") tickNow();   // moves ONE element
   }
-  if (tabOpen("leo")) tickRing();          // one rotation, nothing rebuilt
   if (tabOpen("day")) tickDay();           // one number, nothing rebuilt
   if (coachOpen()) tickCoach();            // timers as text; rebuilds only when a threshold flips
 }
@@ -1390,17 +1388,6 @@ function renderSinceFeed() {
   $("since-feed").textContent = mins < 1 ? "just now" : `${plDur(mins)} ago`;
 }
 
-// Predicted next feed from his last feed + the age-appropriate interval.
-// (Targets give feeds/day; e.g. Leo at 4 mo ≈ 6–8/day → roughly every ~3.4h.)
-function nextFeedAt() {
-  const f = lastFeed();
-  if (!f) return null;
-  const fd = cfgNow().feeds;
-  const avgPerDay = (fd.perDayMin + fd.perDayMax) / 2;
-  const intervalMs = ((24 * 60) / avgPerDay) * 60000;
-  return new Date(new Date(f.end_at || f.start_at).getTime() + intervalMs);
-}
-
 // Friendly minutes: "22 min" / "1 hr 5 min".
 function humanMins(m) {
   if (m < 60) return `${m} min`;
@@ -1408,17 +1395,17 @@ function humanMins(m) {
   return r ? `${h} hr ${r} min` : `${h} hr`;
 }
 
+// The same gate as the home card: cfgNow().night.feedGateMin after his last FULL
+// feed. It used to run its own clock (feeds per day spread over 24h, from a feed
+// of any size), so a snack restarted it and it disagreed with the card.
 function renderNextFeed() {
   const el = $("next-feed");
   if (!el) return;
-  const due = nextFeedAt();
-  if (!due) { el.className = "next-feed"; el.textContent = "Next feed — log a feed to predict"; return; }
-  const diff = Math.round((due - now()) / 60000);
-  let tail;
-  if (diff > 1) { tail = `in ${humanMins(diff)}`; el.className = "next-feed"; }
-  else if (diff >= -5) { tail = "due now"; el.className = "next-feed due"; }
-  else { tail = `overdue ${humanMins(-diff)}`; el.className = "next-feed due"; }
-  el.textContent = `Next feed ~${clockTime(due)} · ${tail}`;
+  const g = coachGate();
+  el.textContent = !g.known ? "No full feed logged yet"
+    : g.why ? `Feed OK · ${g.why}`
+    : g.open ? `Feed OK since ${clockTime(g.opens)}`
+    : `Feed OK from ${clockTime(g.opens)} · in ${humanMins(Math.max(0, Math.round((g.opens - now()) / 60000)))}`;
 }
 
 // Live "as of HH:MM" so it's obvious the app is reading the real current time.
@@ -1749,7 +1736,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "leo")      { renderLeoWake(); renderNaps(); renderAlerts(true); }
+  if (name === "leo")      { renderLeoWake(); renderAlerts(true); }
   if (name === "day")      renderDay();
   if (name === "grow")     renderGrowth();      // also (re)builds the charts now the canvas is visible
   if (name === "food")     renderFood();
@@ -2194,23 +2181,15 @@ function bedtimeStreak() {
 const trainingNights = () => bedtimeHistory(60).filter((n) => !n.rescue).length;
 const phase2Unlocked = () => bedtimeStreak() >= GATE_NIGHTS;
 
-// When the next feed becomes legal. The 3-hour rule is a MINIMUM GATE, not a
-// schedule — nobody wakes him to feed. It counts from the last FULL feed, on the
-// Coach's clock (left + right merged), so a snack doesn't restart it (Mike, 2 Oct).
-function feedGateAt(t) {
-  const T = t || now();
-  const f = coachLastFullFeed(T);
-  if (!f) return null;
-  return { last: f, opens: new Date(f.getTime() + cfgNow().night.feedGateMin * 60000) };
-}
-
 // ---------- Sub-tab: TONIGHT ----------
 function trainTonightHTML() {
   const cfg = cfgNow();
   const st = sleepDayStats();
   const proj = projectTonight(cfg, st);
   const b = openBedtime();
-  const gate = feedGateAt();
+  // The feed gate is a MINIMUM, not a schedule — nobody wakes him to feed. Same
+  // gate as the home card and the Coach: coachGate().
+  const gate = coachGate();
   const streak = bedtimeStreak();
   const nights = trainingNights();
 
@@ -2250,7 +2229,9 @@ function trainTonightHTML() {
   <div class="tr-plan">
     <div class="tr-row"><span class="tr-k">Tonight's target</span><span class="tr-v">${target}</span></div>
     <div class="tr-row"><span class="tr-k">Feed gate</span><span class="tr-v">${
-      gate ? `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>` : "no full feed logged yet"
+      !gate.known ? "no full feed logged yet"
+      : gate.why ? `<b>open</b> <span class="tr-dim">(${gate.why})</span>`
+      : `opens <b>${clockTime(gate.opens)}</b> <span class="tr-dim">(last full feed ${clockTime(gate.last)})</span>`
     }</span></div>
     <div class="tr-row"><span class="tr-k">Night</span><span class="tr-v">${nights || "—"}${nights ? " of training" : ""} · streak <b>${streak}</b>/${GATE_NIGHTS}</span></div>
   </div>
@@ -2318,16 +2299,16 @@ const TRAIN_LADDER = `
 // ---------- Sub-tab: FEEDS ----------
 function trainFeedsHTML() {
   const cfg = cfgNow();
-  const gate = feedGateAt();
+  const gate = coachGate();
   const fr = feedRatio7d();
   const g = cfg.night.feedGateMin;
   return `
-  <div class="tr-gatecard ${gate && now() >= gate.opens ? "open" : "shut"}">
-    <div class="tr-gate-h">${gate ? (now() >= gate.opens ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
-    ${gate ? `<div class="tr-gate-num">${now() >= gate.opens
+  <div class="tr-gatecard ${gate.open ? "open" : "shut"}">
+    <div class="tr-gate-h">${gate.known ? (gate.open ? "Feed gate is OPEN" : "Feed gate is CLOSED") : "No full feed logged yet"}</div>
+    ${gate.known ? `<div class="tr-gate-num">${gate.why || (gate.open
       ? `since ${clockTime(gate.opens)}`
-      : `opens ${clockTime(gate.opens)}`}</div>
-    <p class="tr-gate-n">Last full feed ended ${clockTime(gate.last)}. ${now() >= gate.opens
+      : `opens ${clockTime(gate.opens)}`)}</div>
+    <p class="tr-gate-n">${gate.last ? `Last full feed ended ${clockTime(gate.last)}. ` : ""}${!gate.ns.isNight ? "" : gate.open
       ? "A wake now with real hunger cues gets a feed — dark, boring, no talking, back down awake."
       : "A wake before then is habit, not hunger. Run the ladder."}</p>` : ""}
   </div>
@@ -2350,7 +2331,7 @@ function trainFeedsHTML() {
     <p>If his night feeds are <b>full feeds</b> rather than 5-minute snacks, he isn't being manipulative — he has genuinely moved a chunk of his daily calories into the night, and his body now expects dinner at 1am. <b>The ladder cannot fix hunger and shouldn't try.</b></p>
     <p class="tr-fixday"><b>Fix it from the day side, never by restricting night feeds:</b></p>
     <ul>
-      <li>Offer milk every 2–2½ hours in the day, proactively — don't wait for cues. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
+      <li>Offer milk as soon as the home card says FEED OK — ${plDur(g)} after his last full feed, day and night. Right now the day is more interesting than milk — he'll skip meals to look at things, then collect at night.</li>
       <li>Feed in a boring, dim room. Distraction is the enemy of daytime volume.</li>
       <li>Solids and fat earlier — avocado, egg yolk, chicken thigh, olive oil in the veg. Calories landing before 3pm displace 1am demand.</li>
     </ul>
@@ -2827,12 +2808,16 @@ function renderLeoWake() {
 
   // Softens every white ~8% and kills the pulse animations. No-op when unchanged.
   document.body.classList.toggle("is-night", ns.isNight);
-  // The 24-hour card used to be hidden here at night, and that put the day's naps
-  // on screen nowhere at 3am — the one hour you want to read how the day that
-  // caused this night went. It stays up now; styles.css mutes its arcs under
-  // body.is-night so the card never lights a dark room.
 
+  // By day the card is two clocks the same size (Mike, 3 Oct): awake or napping on
+  // the left, time since his last full feed on the right. Every other state, the
+  // night card included, is the one big clock, and set() puts it back.
+  const two = (on) => {
+    $("leo-two").classList.toggle("hidden", !on);
+    for (const id of ["leo-wake-eyebrow", "leo-wake-time", "leo-wake-status"]) $(id).classList.toggle("hidden", on);
+  };
   const set = (eyebrow, hero, status, why, zone) => {
+    two(false);
     $("leo-wake-eyebrow").textContent = eyebrow;
     $("leo-wake-time").innerHTML = hero;
     $("leo-wake-status").innerHTML = status;
@@ -2848,6 +2833,42 @@ function renderLeoWake() {
     $("leo-pair-a-lab").textContent = aLab || "";
     $("leo-pair-b").textContent = b || "—";
     $("leo-pair-b-lab").textContent = bLab || "";
+  };
+  // "1:20 – 2:05 PM": the first AM/PM goes when both ends share it.
+  const span = (a, b, sep) => {
+    const x = clockTime(a), y = clockTime(b), ap = (x.match(/\s?[AP]M$/i) || [""])[0];
+    return `${ap && y.endsWith(ap) ? x.slice(0, -ap.length) : x}${sep}${y}`;
+  };
+  const setDay = (eyebrow, hero, status, why, zone, napping) => {
+    two(true);
+    $("leo-two-eyebrow").textContent = eyebrow;
+    $("leo-two-time").innerHTML = hero;
+    $("leo-two-status").innerHTML = status;
+    $("leo-wake-why").textContent = why;
+    $("leo-wake-why").classList.remove("hidden");
+    card.className = `card wake-card zone-${zone} lb`;
+    track.classList.remove("hidden");
+    track.classList.toggle("idle", napping);
+    // The feed clock: the same gate as the night card and the Coach, never a copy.
+    const g = coachGate();
+    const gm = cfg.night.feedGateMin;
+    $("leo-feed-time").innerHTML = g.last ? heroTime(now() - g.last) : "—";
+    $("leo-feed-status").innerHTML = verdictHTML(feedVerdict(g), true) + `<span class="lb-sub">${
+      !g.known ? "Log feeds in ⋯ More → 🍼 Feeds &amp; milestones"
+      : napping && g.open ? "only if he wakes — never wake him"
+      : g.why ? g.why
+      : g.open ? `since ${clockTime(g.opens)}` : `OK from ${clockTime(g.opens)}`}</span>`;
+    $("leo-fbar").classList.toggle("open", !!g.open);
+    $("leo-fbar").classList.toggle("idle", !g.last);
+    // The gate mark sits at 75% of the bar (styles.css .fbar em).
+    $("leo-fbar-fill").style.width = g.last ? Math.min(100, (g.sinceMin / (gm / 0.75)) * 100) + "%" : "0";
+    $("leo-fbar-mark").textContent = plDur(gm);
+    // Asleep today = the naps since he got up for the day; then his last finished nap.
+    const up = st.blocks.filter((b) => b.kind === "night" && b.endAt).pop();
+    const nap = st.naps.filter((b) => !b.running).pop();
+    pair(plDur(st.napMins), up ? `asleep today · since ${clockTime(up.endAt)}` : "asleep today",
+         nap ? plDur(nap.fullMins) : "—",
+         nap ? `last nap · ${span(nap.startAt, nap.endAt, "–")}` : napping ? "first nap today" : "no nap yet today");
   };
 
   // ---- Settling in the crib (bedtime session running)
@@ -2944,14 +2965,12 @@ function renderLeoWake() {
   // ---- DAY, ASLEEP ----------------------------------------------------
   if (w.asleep) {
     const cutoff = hhmmToMin(cfg.naps.lastNapCutoff);
-    set(`Napping since ${clockTime(new Date(w.asleep.start_at))}`,
-        heroTime(now() - new Date(w.asleep.start_at)),
-        `Wake him by <b>${plFmt(cutoff)}</b>.`,
-        "A nap after that steals the tiredness he needs for bedtime.",
-        "green");
-    pair(plDur(st.napMins), "day sleep today",
-         `${st.napCount} of ${napRange(cfg)}`, "naps taken");
-    track.classList.add("hidden");
+    const start = new Date(w.asleep.start_at);
+    setDay("Napping for",
+        heroTime(now() - start),
+        `Wake him by <b>${plFmt(cutoff)}</b>`,
+        `Napping since ${clockTime(start)}. A nap after that steals the tiredness he needs for bedtime.`,
+        "green", true);
     return;
   }
 
@@ -2965,168 +2984,23 @@ function renderLeoWake() {
   }
 
   const label = w.isLastOfDay ? "Bedtime window" : w.isFirstOfDay ? "First window" : "Window";
-  set("Awake for",
+  setDay("Awake for",
       heroTime(now() - w.wokeAt),
       w.zone === "early"
-        ? `${label} opens <b>${clockTime(w.opensAt)}</b> — not tired yet`
-        : `${label}: <b>${clockTime(w.opensAt)} – ${clockTime(w.closesAt)}</b>`,
+        ? `${label} opens <b>${clockTime(w.opensAt)}</b>`
+        : `${label} <b>${span(w.opensAt, w.closesAt, " – ")}</b>`,
       w.zone === "early"
         ? `Putting him down before he's tired is what makes bedtime long.`
         : w.zone === "red"
           ? `Past the window — overtired makes settling harder, not easier.`
           : `He's usually ready for the next sleep after ${plDur(w.windowMin)}–${plDur(w.windowMax)} awake.`,
-      w.zone);
-  pair(plDur(st.napMins), "day sleep today",
-       `${clockTime(w.opensAt)}–${clockTime(w.closesAt)}`, "next sleep window");
+      w.zone, false);
 
-  track.classList.remove("hidden");
   const scale = w.windowMax + 30;                 // headroom so overshoot stays visible
   $("leo-ww-fill").style.width = Math.min(100, (w.awakeMin / scale) * 100) + "%";
   const band = $("leo-ww-band");
   band.style.left  = (w.windowMin / scale) * 100 + "%";
   band.style.width = ((w.windowMax - w.windowMin) / scale) * 100 + "%";
-}
-
-// ---- The 24-hour ring ------------------------------------------------
-// Every sleep in the last 24h, placed by TIME OF DAY on a clock face. Last night
-// is the big arc; naps are the small ones. Crucially it does not care which
-// calendar day a sleep started on — which is exactly why the night used to
-// disappear from the home screen at 6am.
-const RING_C = 2 * Math.PI * 70;   // circumference at r=70
-
-function ringSegments(t) {
-  const T = t || now();
-  const from = T.getTime() - 86400000;
-  const out = [];
-  for (const e of events) {
-    if (e.type !== "sleep") continue;
-    const kind = isNightRow(e) ? "night" : "nap";
-    for (const [a, b] of sleepSegments(e, T.getTime())) {
-      let cur = Math.max(a, from);
-      const end = Math.min(b, T.getTime());
-      // A segment crossing midnight has to be cut, or it would wrap the ring.
-      while (cur < end) {
-        const d = new Date(cur);
-        const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
-        const chunk = Math.min(end, midnight);
-        out.push({ kind, from: minOfDay(d), to: minOfDay(d) + (chunk - cur) / 60000 });
-        cur = chunk;
-      }
-    }
-  }
-  return out;
-}
-
-// Sleep in the last rolling 24h, split night vs nap — the two tile numbers.
-function ringTotals(t) {
-  let night = 0, nap = 0;
-  for (const s of ringSegments(t)) {
-    if (s.kind === "night") night += s.to - s.from; else nap += s.to - s.from;
-  }
-  return { nightMin: Math.round(night), napMin: Math.round(nap) };
-}
-
-function renderRing() {
-  const svg = $("leo-ring");
-  if (!svg) return;
-  const cfg = cfgNow();
-  const T = now();
-  const w = wakeState(null, cfg, T);
-  const ns = nightState(null, cfg, T);
-
-  const arc = (fromMin, toMin, cls, extra) => {
-    const len = Math.max(0.6, ((toMin - fromMin) / 1440) * RING_C);
-    return `<circle cx="90" cy="90" r="70" class="${cls}" ${extra || ""} ` +
-           `stroke-dasharray="${len.toFixed(2)} ${RING_C.toFixed(2)}" ` +
-           `stroke-dashoffset="${(-(fromMin / 1440) * RING_C).toFixed(2)}"></circle>`;
-  };
-
-  let html = "";
-  for (const s of ringSegments(T)) html += arc(s.from, s.to, `ring-${s.kind}`);
-  // Where the next sleep is predicted to land — dashed, so it reads as "not yet".
-  if (!w.asleep && w.opensAt) {
-    const a = minOfDay(w.opensAt), b = minOfDay(w.closesAt);
-    if (b > a) html += arc(a, b, "ring-next");
-  }
-  $("leo-ring-arcs").innerHTML = html;
-  tickRing();
-
-  // The centre deliberately does NOT repeat the big timer above it — it answers
-  // the one thing that card doesn't: what happens next.
-  let lab = "next sleep", val = "—";
-  if (ns.isNight) {
-    lab = "morning at"; val = plFmt(hhmmToMin(cfg.night.morningWakeEarliest));
-  } else if (w.asleep) {
-    lab = "wake by"; val = plFmt(hhmmToMin(cfg.naps.lastNapCutoff));
-  } else if (w.opensAt) {
-    val = clockTime(w.opensAt).replace(/\s?[AP]M/, "");
-  }
-  $("leo-ring-lab").textContent = lab;
-  $("leo-ring-val").textContent = val;
-
-  const tot = ringTotals(T);
-  $("leo-ring-night").textContent = tot.nightMin ? plDur(tot.nightMin) : "—";
-  $("leo-ring-night-lab").textContent = tot.nightMin ? "night sleep" : "no night logged";
-  $("leo-ring-naps").textContent = plDur(tot.napMin);
-  $("leo-ring-naps-lab").textContent = "naps";
-  $("leo-naps-total").textContent = plDur(tot.nightMin + tot.napMin) + " asleep";
-}
-
-// The only thing that moves every second: one rotation.
-function tickRing() {
-  const hand = $("leo-ring-hand");
-  if (hand) hand.setAttribute("transform", `rotate(${(minOfDay(now()) / 1440) * 360} 90 90)`);
-}
-
-// ---- Naps. Answers "how many is he supposed to have" with hollow dots, and
-// says it in words underneath — the old pip row printed "1 of 2–3 naps" with
-// nothing telling you that was a target.
-function renderNaps() {
-  const host = $("leo-nap-pips");
-  if (!host) return;
-  renderRing();
-  const cfg = cfgNow();
-  // WHICH day the dots and the list are about. The ring itself is rolling-24h and
-  // needs no help, but sleepDayStats() clips to the CALENDAR day — so at 3:16am it
-  // would print "No naps yet today" underneath a ring full of yesterday's arcs. At
-  // night the day worth reading is the one that just ended, which is the anchor
-  // nightState() already holds.
-  const T = now();
-  const ns = nightState(null, cfg, T);
-  const lookBack = ns.isNight && ns.anchorDate.toDateString() !== T.toDateString();
-  const st = sleepDayStats(null, lookBack
-    ? new Date(ns.anchorDate.getFullYear(), ns.anchorDate.getMonth(), ns.anchorDate.getDate(), 23, 59, 59)
-    : T);
-  const cap = cfg.naps.maxCount;
-
-  let dots = "";
-  for (let i = 0; i < Math.max(cap, st.napCount); i++) {
-    dots += `<span class="nap-dot${i < st.napCount ? (i >= cap ? " over" : " on") : ""}"></span>`;
-  }
-  host.innerHTML = dots;
-  // The card header belongs to renderRing() now — it shows the 24h total, not
-  // just naps. Setting it here as well just clobbered it.
-  $("leo-naps-why").textContent = st.napCount > cap
-    ? `That's more than usual — ${napRange(cfg, cap)} naps a day is the target at ${cfg.band}.`
-    : `He usually has ${napRange(cfg, cap)} naps a day at ${cfg.band}, about ${plDur(cfg.naps.totalDayMin)}–${plDur(cfg.naps.totalDayMax)} of day sleep.`;
-
-  const ord = ["1st", "2nd", "3rd", "4th", "5th", "6th"];
-  $("leo-naps-list").innerHTML = st.naps.length
-    ? st.naps.map((b, i) =>
-        `<span class="nap-item"><b>${ord[i] || i + 1}</b> ${clockTime(b.startAt)} · ` +
-        `${b.running ? "now" : plDur(Math.round(b.fullMins))}</span>`).join("")
-    : `<span class="nap-item muted">${lookBack ? "No naps logged that day." : "No naps yet today."}</span>`;
-
-  const w = wakeState(null, cfg);
-  // At night the hero card and the ring centre already answer "what happens next",
-  // so a nap-window sentence here at 3am is noise on the one screen that must stay calm.
-  $("leo-naps-next").textContent = ns.isNight
-    ? ""
-    : w.asleep
-      ? `Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))} — a later nap steals from bedtime.`
-      : w.opensAt
-        ? `Next nap window ${clockTime(w.opensAt)}–${clockTime(w.closesAt)}. Nothing after ${plFmt(hhmmToMin(cfg.naps.lastNapCutoff))}.`
-        : "";
 }
 
 // ---- Start nap / Start bedtime. Rebuilt only when the choice actually changes,
@@ -3488,7 +3362,7 @@ async function onSettingsChanged(payload) {
   if (row.key === "sleep_model") SETTINGS.overrides = (row.value && row.value.overrides) || {};
   settingsRev++;
   try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({ baby: SETTINGS.baby, overrides: SETTINGS.overrides })); } catch (e) {}
-  render(); renderNaps(); renderAlerts(true); renderSettings(); if (tabOpen("sleep")) renderSleep();
+  render(); renderAlerts(true); renderSettings(); if (tabOpen("sleep")) renderSleep();
 }
 
 // Minutes get a number box, clock times get a time box. Deliberately not sliders:
@@ -4080,7 +3954,6 @@ const COACH = {
   sessionGapMin: 10,        // left + right breast rows this close together are ONE feed
   routineFeedLeadMin: 90,   // a full feed this long before night start is tonight's routine feed
   chatKey: "leo_coach_chat_v1",
-  speakKey: "leo_coach_speak",
   dimKey: "leo_coach_dim",
 };
 
@@ -4275,19 +4148,34 @@ function coachLastFullFeed(t) {
   const full = coachFeedSessions(t).filter((x) => x.full && !x.running);
   return full.length ? new Date(full[full.length - 1].end) : null;
 }
-// known=false when no full feed is logged since tonight's routine: the gate
-// would otherwise time itself off an afternoon feed and say "open" by mistake.
+// THE feed gate, day and night: cfgNow().night.feedGateMin since his last full
+// feed. The home card, the Coach, the Training tab and the Feeds tab all read this,
+// so they can't give two answers (Mike, 3 Oct).
+// At night, known=false when no full feed is logged since tonight's routine: the
+// gate would otherwise time itself off an afternoon feed and say "open" by mistake.
 function coachGate(t) {
   const T = t || now();
   const c = cfgNow();
   const ns = nightState(null, c, T);
   const last = coachLastFullFeed(T);
-  // Anchor on crib time when there is a bedtime session: the night row only starts
-  // when he falls ASLEEP, which after an 80-minute protest drops the routine feed.
-  const tb = tonightsBedtime(T);
-  const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
-  const from = anchor - COACH.routineFeedLeadMin * 60000;
-  if (!last || last.getTime() < from) return { known: false, ns };
+  if (ns.isNight) {
+    // Anchor on crib time when there is a bedtime session: the night row only starts
+    // when he falls ASLEEP, which after an 80-minute protest drops the routine feed.
+    const tb = tonightsBedtime(T);
+    const anchor = tb ? Math.min(new Date(tb.start_at).getTime(), ns.nightStart.getTime()) : ns.nightStart.getTime();
+    const from = anchor - COACH.routineFeedLeadMin * 60000;
+    if (!last || last.getTime() < from) return { known: false, ns };
+  } else {
+    // Once the bedtime routine starts it says FEED OK (Mike, 3 Oct): the routine
+    // starts with the feed, and on a short-nap day that is still day-card time.
+    const d = coachDay(T);
+    if (d.kind === "bed" && T >= d.routine) return { known: true, open: true, why: "bedtime routine, feed first", last, sinceMin: last ? (T - last) / 60000 : null, ns };
+    // The first full feed after he's up for the day is always OK (Mike, 3 Oct): it
+    // says so until that feed is logged, then the hours count from it.
+    const up = sleepDayStats(null, T).blocks.filter((b) => b.kind === "night" && b.endAt && b.endAt <= T).pop();
+    if (up && (!last || last < up.endAt)) return { known: true, open: true, why: "first feed of the day", last: null, ns };
+    if (!last) return { known: false, ns };
+  }
   const opens = new Date(last.getTime() + c.night.feedGateMin * 60000);
   return { known: true, open: T >= opens, last, opens, sinceMin: (T - last) / 60000, ns };
 }
@@ -4613,7 +4501,7 @@ function coachFlowHTML() {
   h += `<div class="co-step">${coachStepHTML(f, g, c, T)}</div>`;
 
   // The gate opened while on the steps: never switch to the breast mid-cry.
-  if (f.mode === "night" && ladder && g.known && g.open && g.last.getTime() < f.t0 + 60000) {
+  if (f.mode === "night" && ladder && g.last && g.open && g.last.getTime() < f.t0 + 60000) {
     h += `<div class="co-al gold">It's now ${plDur(c.night.feedGateMin)}+ since his last full feed. Keep going with the steps until he's asleep: no feed on this wake. If he falls asleep and wakes up later, that new wake is a feed.</div>`;
   }
   if (f.mode === "nap" && ladder && T >= atToday(c.naps.lastNapCutoff, T)) {
@@ -4631,12 +4519,11 @@ function coachFlowHTML() {
 
 const coLadder = (n) => `<div class="co-ladder">${["Wait", "Hand + shhh", "Hold still"].map((l, i) =>
   `<span class="${i + 1 === n ? "on" : ""}">${l}</span>`).join("")}</div>`;
-const coSay = (text) => `<button class="co-say" data-act="say" data-say="${coEsc(text)}" aria-label="Read aloud">🔊</button>`;
 
 function coachStepHTML(f, g, c, T) {
   const gate = plDur(c.night.feedGateMin);
-  const step = (label, title, doText, more, btns, sayText) =>
-    `<div class="co-stephead"><span class="co-label">${label}</span>${coSay(sayText || title + ". " + doText)}</div>
+  const step = (label, title, doText, more, btns) =>
+    `<div class="co-stephead"><span class="co-label">${label}</span></div>
      <h3>${title}</h3><p class="co-do">${doText}</p>${more || ""}<div class="co-stepbtns">${btns}</div>`;
   const noSleepLogged = f.mode === "night" && !openSleep() && !openBedtime()
     ? `<p class="co-note">No night sleep is logged, so this wake isn't counted in the tracker.</p>` : "";
@@ -4655,7 +4542,7 @@ function coachStepHTML(f, g, c, T) {
     case "open":
       return step("Feed gate · open", "Emma feeds",
         "Sitting up, not lying in bed, not on a sofa. Lights low, no talking. Then into the crib awake, on his back.",
-        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+        `${g.last ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
          <p class="co-who">${minOfDay(T) < 120 || minOfDay(T) >= 18 * 60 ? "Emma is asleep in the other room until 2 AM: Mike wakes her. " : ""}If she feels herself dozing, he goes into the crib.</p>
          <p class="co-note">1–2 night feeds are normal at this age. This is not night-weaning.</p>${noSleepLogged}`,
         coBtn("feed:left", "Feeding · left", "gold") + coBtn("feed:right", "Feeding · right", "gold") + coBtn("asleep", "He settled on his own", "ghost wide"));
@@ -4671,9 +4558,9 @@ function coachStepHTML(f, g, c, T) {
         "If he protests, Mike takes over with the steps. Emma goes back to bed.",
         "", coBtn("asleep", "😴 He's asleep", "sleep") + coBtn("go:L1", "Protesting → step 1", "cry"));
     case "closed":
-      return step("Feed gate · closed", g.known ? `Opens at ${clockTime(g.opens)}` : "Not hunger",
+      return step("Feed gate · closed", g.opens ? `Opens at ${clockTime(g.opens)}` : "Not hunger",
         "This wake isn't hunger. Mike goes in. Emma stays out of the room: if he smells milk, he keeps asking for it.",
-        `${g.known ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
+        `${g.last ? `<p>Last full feed ${clockTime(g.last)}, ${plDur(Math.round(g.sinceMin))} ago.</p>` : ""}
          <div class="co-dont">Never end the steps with a feed.</div>${noSleepLogged}`,
         coBtn("go:L1", "Start the steps", "cry"));
     case "L1":
@@ -4693,8 +4580,7 @@ function coachStepHTML(f, g, c, T) {
         `${coLadder(3)}<p class="co-who">White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still.</p>
          <p>Stand, or sit on a hard upright chair. No time limit. If he dozes off in your arms, put him in the crib anyway, then step 1.</p>
          ${held >= COACH.painCheckMin * 60000 ? `<div class="co-al red">${COACH.painCheckMin}+ minutes in arms without calming. Check: pain or protest?</div>` : ""}`,
-        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"),
-        "Hold him still. White noise on loud before you pick him up: across the room, never next to his head. Then shush right by his ear, louder than his cry, while you hold him still. No bouncing, no walking, no ball. Hold until he is calm, not asleep. Then back in the crib, awake.");
+        coBtn("calm", "Calm → back in the crib", "sleep") + coBtn("asleep", "Asleep in the crib", "ghost"));
     }
     case "pain":
       return step("Pain or protest?", "Does he calm in your arms?",
@@ -4702,8 +4588,7 @@ function coachStepHTML(f, g, c, T) {
         `<p>Arching at Mike that stops when Emma walks in is protest, not pain.</p>
          <p><b>Pain looks like:</b> inconsolable in anyone's arms for 20–30 minutes, arching, legs pulled up, worse lying flat → rescue night.</p>
          <div class="co-dont"><b>${coEsc(COACH_911)}</b><br><br><b>Go to a doctor or ER now for:</b><ul>${COACH_RED.map((x) => `<li>${coEsc(x)}</li>`).join("")}</ul></div>`,
-        coBtn("go:L3", "He calms → protest, continue", "sleep") + coBtn("rescue", f.mode === "nap" ? "Comfort him fully" : "Rescue night", "cry"),
-        "Does he calm in your arms? If yes, and he's otherwise well, keep going with the steps. If he stays inconsolable for 20 to 30 minutes, arching or pulling his legs up, it's a rescue night. Screaming in waves with quiet gaps, vomiting, or blood or jelly in the diaper: go to a doctor or the E R now. Struggling to breathe, blue lips, a seizure, or you can't wake him: call 9 1 1.");
+        coBtn("go:L3", "He calms → protest, continue", "sleep") + coBtn("rescue", f.mode === "nap" ? "Comfort him fully" : "Rescue night", "cry"));
     case "rescue":
       return step("Rescue", "Comfort him fully",
         `Say it out loud: "This is a rescue ${f.mode === "nap" ? "nap" : "night"}." Then whatever works: arms, feeding, rocking.`,
@@ -4746,8 +4631,7 @@ function coachStepHTML(f, g, c, T) {
         "Infant ibuprofen about 30 minutes before the routine. Measure only with the box's syringe.",
         `<p>Before the first dose, have a pharmacist or your pediatrician write on the box the mL for his weight, for that exact bottle. Infant drops and children's liquid are different strengths. Never more often than every 6–8 hours. Skip it and call if he isn't drinking, is vomiting or has diarrhea.</p>
          <div class="co-dont">Fever of 38 °C or more = he's sick, not teething: rescue night, no steps.</div>
-         <p>Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → it isn't the tooth, keep going.</p>`, "",
-        "Teething, worst two or three nights only. Infant ibuprofen about 30 minutes before the routine, only the millilitres the pharmacist wrote on the box for his weight, measured with the box's syringe, never more often than every 6 to 8 hours. Fever of 38 or more means he's sick, not teething: rescue night.");
+         <p>Medicated and still inconsolable → rescue night, check the red flags. Medicated and plain protest → it isn't the tooth, keep going.</p>`, "");
     case "tired":
       return step("Tired early", "Change the scene first",
         "Outside, light, a new toy, for 5 minutes.",
@@ -4762,10 +4646,9 @@ function coachStepHTML(f, g, c, T) {
 }
 
 function coachAskHTML() {
-  const speak = coachLS.get(COACH.speakKey, true);
   const msgs = coachState.chat.map((m) =>
     `<div class="co-msg ${m.role === "user" ? "me" : "ai"}">${coEsc(m.content)}</div>`).join("");
-  return `<p class="co-note">Say what's happening: tap the box, then the mic on your keyboard. The coach knows the plan, the time and the last 30 hours of the log.</p>
+  return `<p class="co-note">The coach knows the plan, the time and the last 30 hours of the log.</p>
     <div class="co-chips">${["He's been crying 20 min in my arms and arching", "He woke 40 minutes after a feed", "Can we skip the plan tonight?", "He seems to be teething"]
       .map((q) => `<button data-act="chip" data-q="${coEsc(q)}">${coEsc(q)}</button>`).join("")}</div>
     <div id="co-chat" class="co-chat">${msgs}${coachState.busy ? `<div class="co-msg ai co-typing">Thinking…</div>` : ""}</div>
@@ -4774,7 +4657,6 @@ function coachAskHTML() {
       <div class="co-askrow">
         <button class="co-btn sleep" type="submit" ${coachState.busy ? "disabled" : ""}>Ask</button>
       </div>
-      <label class="co-toggle"><input type="checkbox" id="co-speak" ${speak ? "checked" : ""}> 🔊 Read answers aloud. Silent Mode off (or an earbud), screen on until it answers.</label>
       ${coachState.chat.length ? `<button class="co-link" type="button" data-act="chat-clear">${coachState.clearArmed ? "Tap again to clear the conversation" : "Clear this conversation"}</button>` : ""}
     </form>`;
 }
@@ -4851,28 +4733,6 @@ function closeCoach() {
   coachState.flow = null;
   coachState.confirmUp = false;
   coachState.view = "now";
-  try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
-}
-
-// ---- Voice out: the phone's own voice. iOS only lets a page speak after a tap,
-// so the first speak() happens synchronously inside the tap, before any await. ---
-function coachSpeakUnlock() {
-  try {
-    if (!coachLS.get(COACH.speakKey, true) || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(""));
-  } catch (e) {}
-}
-function coachSpeak(text, force) {
-  try {
-    if ((!force && !coachLS.get(COACH.speakKey, true)) || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const t = String(text).replace(/[*_#`>]/g, "");
-    const u = new SpeechSynthesisUtterance(t);
-    u.lang = /[¿¡ñáéíóú]|\b(que|está|bebé|despert|llor|cuna|dormid)/i.test(t) ? "es-MX" : "en-US";
-    u.rate = 0.95;
-    window.speechSynthesis.speak(u);
-  } catch (e) {}
 }
 
 // ---- The AI: the existing ask-leo function, with the plan as system context ---
@@ -4916,7 +4776,7 @@ How to answer:
 - Then at most 4 short lines of how or why. No headings. Under 120 words in total.
 - Reply in the language of the question (English or Spanish).
 - Stick to the plan. Never suggest bouncing, the ball, feeding to sleep or feeding in bed, except when NOW says "Rescue night: YES" (then feeding and rocking are fine, but never asleep together on a sofa or armchair). A rescue night is for pain or illness signs; a parent saying it in chat because the crying is long is not one: give the pain check.
-- At night only (bedtime to 6 AM): a feed only if ${plDur(c.night.feedGateMin)}+ since the last FULL feed. Gate closed → the steps. Never end the steps with a feed. Daytime feeds are not gated.
+- Day and night: a feed only if ${plDur(c.night.feedGateMin)}+ since the last FULL feed, the same answer the home card shows. At night, gate closed → the steps. Never end the steps with a feed. Never wake him to feed.
 - Protest vs pain: calms in arms = protest. Inconsolable in arms 20–30 min with arching or legs pulled up = pain → rescue night. Screaming in waves with quiet gaps, vomiting, blood or jelly in the diaper → doctor or ER now.
 - Red flags: give them plainly and tell them to get help now (911 for breathing trouble, blue or grey skin, a seizure, or can't wake him).
 - Never give medication doses (mg or mL). For teething ibuprofen: infant ibuprofen, the mL a pharmacist or pediatrician wrote on the box for his weight, no more often than every 6–8 h. Fever of 38 °C or more is illness, not teething.
@@ -4934,7 +4794,7 @@ Doctor or ER now: ${COACH_RED.join("; ")}.
 NOW
 Time: ${T.toLocaleString()}.
 ${ns.isNight ? "It is night." : `It is day. ${d && d.kind === "nap" ? `Next nap: crib by ${clockTime(d.crib)}.` : d && d.kind === "bed" ? `Bedtime: routine ${clockTime(d.routine)}, crib by ${clockTime(d.crib)}.` : d && d.kind === "napping" ? `Napping since ${clockTime(d.start)}, wake him by ${clockTime(d.wakeBy)}.` : ""}`}
-${ns.isNight ? `Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}, last full feed ${clockTime(g.last)}` : "no full feed logged since tonight's routine"}.` : "Feed gate: not used during the day."}
+Feed gate: ${g.known ? `${g.open ? "open" : "closed until " + clockTime(g.opens)}${g.why ? ", " + g.why : ""}${g.last ? `, last full feed ${clockTime(g.last)}` : ""}` : ns.isNight ? "no full feed logged since tonight's routine" : "no full feed logged"}.
 Rescue night: ${tbR && isRescue(tbR) ? "YES, declared in the app tonight" : "no"}.
 Plan: ${!i.p ? "not started" : i.p.paused ? "paused" : i.n < 1 ? "starts " + i.p.startDate : i.n > 7 ? "7 nights done" : "night " + i.n + " of 7"}.${f ? `\nThey are in the step-by-step: ${f.mode}, step ${f.step}${f.cryT0 ? `, crying for ${plDur(Math.round((T.getTime() - f.cryT0) / 60000))}` : ""}.` : ""}
 
@@ -4945,7 +4805,6 @@ ${coachLogText(T)}`;
 async function coachAsk(question) {
   const q = String(question || "").trim();
   if (!q || coachState.busy) return;
-  coachSpeakUnlock();                       // inside the tap, before any await
   coachState.chat.push({ role: "user", content: q });
   coachState.busy = true;
   coachState.view = "ask";
@@ -4969,7 +4828,6 @@ async function coachAsk(question) {
   coachState.busy = false;
   if (reply) {
     coachState.chat.push({ role: "assistant", content: reply });
-    if (coachOpen()) coachSpeak(reply);
   } else {
     coachState.chat.push({ role: "assistant", content: "I couldn't reach the coach. Use the steps on the Now screen, and try again in a minute." });
   }
@@ -4997,7 +4855,6 @@ async function onCoachClick(e) {
   if (verb === "flow-exit") { coachState.flow = null; coachState.view = "now"; return renderCoach(); }
   if (verb === "view") { coachState.view = arg; return renderCoach(); }
   if (verb === "go") return coachGo(arg);
-  if (verb === "say") return coachSpeak(b.dataset.say, true);
   if (verb === "flow") {
     if (arg === "night") return coachStartFlow("night", minOfDay(now()) >= 270 && minOfDay(now()) < hhmmToMin(cfgNow().night.morningWakeEarliest) ? "early" : "gate");
     if (arg === "nap") return coachStartFlow("nap", "naproutine");
@@ -5092,7 +4949,6 @@ async function onCoachChange(e) {
     if (i.p && i.n >= 1 && !i.morning) { coachToast("Changing the plan only works 6 AM–noon. Decide in the morning."); e.target.value = i.p.startDate || ""; return; }
     await saveCoachPlan({ ...(coachState.plan || {}), startDate: e.target.value });
   }
-  if (e.target.id === "co-speak") coachLS.set(COACH.speakKey, e.target.checked);
   if (e.target.id === "co-dim") { coachLS.set(COACH.dimKey, e.target.checked); renderCoach(); }
 }
 function onCoachSubmit(e) {
@@ -5174,7 +5030,7 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
 function _redrawAll() {
-  render(); renderNaps(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
+  render(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
   coachRefresh();
 }

@@ -680,6 +680,7 @@ async function showApp() {
   // Alerts on their own slow cadence. NOT in render(): a dismiss button that gets
   // rebuilt every second can't be tapped.
   if (!alertTick) alertTick = setInterval(() => renderAlerts(), 15000);
+  cryInit();                                   // the app closed mid-listening → "Not listening"
 }
 
 // ============================================================
@@ -1323,6 +1324,7 @@ function render() {
   }
   if (tabOpen("day")) tickDay();           // one number, nothing rebuilt
   if (coachOpen()) tickCoach();            // timers as text; rebuilds only when a threshold flips
+  if (cryShown()) tickCry();               // the listening screen's clocks, same rule
 }
 
 // Sticky banner (above the tabs) so the live wake/sleep timer is visible on every tab.
@@ -1516,6 +1518,7 @@ function renderLog(listId) {
     // the screen the moment it flipped to day mode at 6am.
     today = events.filter((e) => isToday(e.start_at) || (e.end_at && isToday(e.end_at)));
   }
+  if (listId === "leo-log-list") renderCryTotal(nightScoped);
   if (today.length === 0) {
     list.innerHTML = `<li class="log-empty">${nightScoped ? "Nothing logged today or tonight yet." : "No entries yet today."}</li>`;
     return;
@@ -1523,6 +1526,8 @@ function renderLog(listId) {
 
   list.innerHTML = "";
   for (const e of today) {
+    // The cry listener's rows have their own look: ▶ or 🔒, and 🗑, no ✏️.
+    if (isCrySpell(e) || isCryGap(e)) { list.appendChild(cryLogRow(e)); continue; }
     const li = document.createElement("li");
     li.className = "log-item";
 
@@ -2805,6 +2810,7 @@ function renderLeoWake() {
   const track = $("leo-ww-track");
   const st = sleepDayStats();
   renderSleepActions(w, cfg);
+  renderCryButtons(ns);
 
   // Softens every white ~8% and kills the pulse animations. No-op when unchanged.
   document.body.classList.toggle("is-night", ns.isNight);
@@ -4959,6 +4965,669 @@ function onCoachSubmit(e) {
 }
 
 // ============================================================
+//  10l. CRY LISTENER — a phone by the crib records Leo only while he cries
+// ============================================================
+// Mike's design, 7 Oct (mockup 2026-10-07_cry_listener_mockup.html): Look C
+// "Almost black", Q1 a, Q2 b (a parent's phone, Android), Q3 a. One phone listens
+// all night with the Leo app open, plugged in, screen kept on. It measures how loud
+// the room is ten times a second, on the phone — nothing is sent anywhere to decide.
+// When he cries it records, and each crying spell becomes ONE events row: type
+// "cry", start_at/end_at, so the TIMES reach both phones like every other row. The
+// SOUND never leaves this phone: it lives in the browser's own storage (IndexedDB).
+// A stretch the phone could not hear (the app left the screen, the microphone went
+// away) becomes a "listen_gap" row, so a short total is never read as a calm night.
+// events.type has no CHECK constraint and every other reader filters by type, so
+// neither row needs a database change. The app never speaks: no speech in or out.
+
+// The detector's numbers, all in one place. Starting guesses (the mockup's "how it
+// decides" box), to be tuned after the first real nights.
+const CRY = {
+  frameMs: 100,            // how often the loudness is measured
+  loudOverRoomDb: 12,      // "loud enough": this many decibels over the room's normal
+  roomWindowSec: 300,      // the room's normal is read from the last 5 minutes of sound…
+  roomPercentile: 10,      // …as the level only 10% of moments were quieter than (white noise included)
+  startAfterLoudSec: 5,    // "for long enough": this much loud sound starts a recording
+  breathGapSec: 2,         // a dip shorter than this (a breath between sobs) doesn't reset that count
+  endAfterQuietSec: 60,    // a full minute without crying ends the spell and saves it
+  preRollSec: 15,          // every recording starts at least this long before the cry was confirmed
+  minGapSec: 60,           // a pause in listening shorter than this isn't logged
+  keepNights: 14,          // recordings older than this delete themselves; the rows stay (Q3 a)
+  bitsPerSecond: 24000,    // voice quality, about 11 MB per hour of crying
+};
+const CRY_KEY = "leo_cry_listen";   // this phone's listening: { from, heard, on } (ms)
+
+const cry = {
+  on: false,          // this phone is meant to be listening (the parent started it)
+  hearing: false,     // …and right now it actually can: microphone live, app on screen
+  starting: false,    // waiting for the microphone (the phone may be asking "Allow?")
+  err: "",            // why the microphone couldn't start, in plain words
+  from: null,         // when listening began tonight
+  stream: null, ctx: null, an: null, buf: null, timer: null, wake: null,
+  levels: [], room: null, roomT: 0, level: null, lastT: 0, beat: 0,
+  loudFrom: null, loudMs: 0, lastLoud: 0,   // the loud run that may become a spell
+  spell: null,        // { startAt, lastLoud, rec } while a crying spell is recording
+  recs: [],           // the rolling recorders that keep the seconds before a cry
+  gapFrom: null,      // when the phone stopped hearing
+  offWhy: "",         // …and why, in plain words
+  view: "listen", confirm: false, sig: "",
+  playing: null,      // the recording loaded in the player
+};
+const cryShown = () => { const el = $("cry"); return !!el && !el.classList.contains("hidden"); };
+const cryIso = (ms) => new Date(ms).toISOString();
+const isCrySpell = (e) => e.type === "cry";
+const isCryGap = (e) => e.type === "listen_gap";
+const cryClipId = (e) => { const m = /clip=([\w-]+)/.exec(e.note || ""); return m ? m[1] : null; };
+const cryOrd = (n) => { const t = n % 100, o = n % 10; return n + (t >= 11 && t <= 13 ? "th" : o === 1 ? "st" : o === 2 ? "nd" : o === 3 ? "rd" : "th"); };
+// "2m 08s" — the recording's own clock, like the mockup's.
+const cryClock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return s < 60 ? `${s}s` : `${plDur(Math.floor(s / 60))} ${pad(s % 60)}s`; };
+// "2:14–2:21 AM": the first AM/PM goes when both ends share it.
+function crySpan(a, b, sep) {
+  const x = clockTime(a), y = clockTime(b), ap = (x.match(/\s?[AP]M$/i) || [""])[0];
+  return `${ap && y.endsWith(ap) ? x.slice(0, -ap.length) : x}${sep}${y}`;
+}
+
+// Which night a moment belongs to: noon to noon, the pivot nightState() uses.
+function cryNightFrom(ms) {
+  const a = nightState(null, null, new Date(ms)).anchorDate;
+  return new Date(a.getFullYear(), a.getMonth(), a.getDate(), 12).getTime();
+}
+// That night's crying spells and gaps, oldest first.
+function cryRowsOfNight(T) {
+  const from = cryNightFrom(T.getTime()), to = from + 86400000;
+  return events.filter((e) => (isCrySpell(e) || isCryGap(e)) && e.end_at)
+    .filter((e) => { const t = new Date(e.start_at).getTime(); return t >= from && t < to; })
+    .sort((x, y) => new Date(x.start_at) - new Date(y.start_at));
+}
+const cryLen = (e) => new Date(e.end_at) - new Date(e.start_at);
+const cryTotal = (rows) => rows.reduce((s, e) => s + cryLen(e), 0);
+
+// ---- Storage on this phone only: the browser's own database ------------------
+const cryDB = {
+  _db: null,
+  open() {
+    return this._db || (this._db = new Promise((ok, bad) => {
+      const r = indexedDB.open("leo-cry", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("clips", { keyPath: "id" });
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => bad(r.error);
+    }));
+  },
+  async run(mode, fn) {
+    const db = await this.open();
+    return new Promise((ok, bad) => {
+      const t = db.transaction("clips", mode);
+      const req = fn(t.objectStore("clips"));
+      t.oncomplete = () => ok(req && req.result);
+      t.onerror = () => bad(t.error);
+    });
+  },
+  put(c) { return this.run("readwrite", (s) => s.put(c)); },
+  get(id) { return this.run("readonly", (s) => s.get(id)); },
+  del(id) { return this.run("readwrite", (s) => s.delete(id)); },
+  all() { return this.run("readonly", (s) => s.getAll()); },
+};
+const cryClips = new Map();   // id → { at, durMs }: what this phone holds, no sound in memory
+
+// ---- Writes. leoDebug's generated microphone keeps its rows in memory: a made-up
+// night must never reach the real log.
+let cryFake = null;
+async function cryInsert(row) {
+  if (cryFake) {
+    events = [{ id: "fake-" + crypto.randomUUID(), ...row }, ...events]
+      .sort((x, y) => new Date(y.start_at) - new Date(x.start_at));
+    _redrawAll();
+    return;
+  }
+  const { error } = await sb.from("events").insert(row);
+  if (error) console.error(error);
+  await loadEvents();
+}
+async function cryGapWrite(from, to, why) {
+  if (to - from < CRY.minGapSec * 1000) return;
+  await cryInsert({ type: "listen_gap", start_at: cryIso(from), end_at: cryIso(to), note: why || null });
+}
+
+// ---- The microphone ----------------------------------------------------------
+// The phone's own clean-up is switched off: noise suppression would erase the white
+// noise the room's normal is measured against, and automatic volume would make every
+// sound the same loudness.
+async function cryMic() {
+  if (cryFake) {   // leoDebug: a generated room instead of the microphone
+    await cryFake.ctx.resume();
+    return new MediaStream(cryFake.dest.stream.getAudioTracks().map((t) => t.clone()));
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+}
+
+// From a tap: the night card's button, or "Start listening again".
+async function cryListen() {
+  cry.err = "";
+  cry.starting = true;
+  cryRender();
+  let stream;
+  try {
+    if (!window.MediaRecorder) throw new Error("no recorder");
+    stream = await cryMic();
+  } catch (e) {
+    cry.starting = false;
+    cry.err = "The microphone isn't allowed for the Leo app. Allow it in the phone's settings for this app, then tap Start listening again.";
+    cryRender();
+    return;
+  }
+  cryRelease();                                  // the old, dead microphone, if any
+  cry.stream = stream;
+  cry.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  cry.an = cry.ctx.createAnalyser();
+  cry.an.fftSize = 2048;
+  cry.buf = new Float32Array(cry.an.fftSize);
+  cry.ctx.createMediaStreamSource(stream).connect(cry.an);
+  try { await cry.ctx.resume(); } catch (_) {}
+  if (cry.ctx.state !== "running") {             // a live microphone it can't hear is not listening
+    cryRelease();
+    cry.starting = false;
+    cry.err = "The phone didn't let the app hear. Tap Start listening again.";
+    cryRender();
+    return;
+  }
+  // If the phone pauses the app's sound later (a call, another app), it's not
+  // hearing any more, whatever the microphone says.
+  const ctx = cry.ctx;
+  ctx.addEventListener("statechange", () => {
+    if (ctx === cry.ctx && cry.hearing && ctx.state !== "running") { cryHearingOff("the phone paused the app's sound"); cryShowOff(); }
+  });
+  const track = stream.getAudioTracks()[0];
+  track.addEventListener("ended", () => { cryHearingOff("the microphone stopped"); cryShowOff(); });
+  track.addEventListener("mute", () => { cryHearingOff("a call or another app took the microphone"); cryShowOff(); });
+  track.addEventListener("unmute", () => { if (!document.hidden) cryComeBack(); });
+  const T = now().getTime();
+  const prev = coachLS.get(CRY_KEY, null);
+  cry.from = prev && prev.from && cryNightFrom(prev.from) === cryNightFrom(T) ? prev.from : T;
+  coachLS.set(CRY_KEY, { from: cry.from, heard: T, on: true });
+  cry.on = true;
+  cry.starting = false;
+  cry.levels = []; cry.room = null;
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  cryHearingOn();
+}
+
+function cryHearingOn() {
+  const T = now().getTime();
+  if (cry.gapFrom != null) cryGapWrite(cry.gapFrom, T, cry.offWhy);
+  cry.gapFrom = null; cry.offWhy = "";
+  cry.hearing = true;
+  cry.lastT = T; cry.loudFrom = null; cry.loudMs = 0;
+  clearInterval(cry.timer);
+  cry.timer = setInterval(cryFrame, CRY.frameMs);
+  cryWake();
+  cryRender();
+}
+// The app left the screen, or the microphone went away. What was heard is saved;
+// from here on it's a gap. Returns once an open spell is saved.
+function cryHearingOff(why) {
+  if (!cry.hearing) return Promise.resolve();
+  cry.hearing = false;
+  clearInterval(cry.timer); cry.timer = null;
+  const T = now().getTime();
+  cry.gapFrom = T; cry.offWhy = why;
+  const rec = coachLS.get(CRY_KEY, null);
+  if (rec) coachLS.set(CRY_KEY, { ...rec, heard: T });
+  const saving = cry.spell ? crySpellEnd() : Promise.resolve();
+  cry.recs.forEach(cryRecDrop); cry.recs = [];
+  cry.loudFrom = null; cry.loudMs = 0;
+  cryRender();
+  return saving;
+}
+// Back on screen. Android usually keeps the microphone through a short trip away;
+// then it carries on by itself and the gap goes in the log. If it's gone, the
+// "Not listening" screen says so.
+async function cryComeBack() {
+  if (!cry.on || cry.hearing) return;
+  const track = cry.stream && cry.stream.getAudioTracks()[0];
+  if (track && track.readyState === "live" && !track.muted && cry.ctx && cry.ctx.state !== "closed") {
+    try { await cry.ctx.resume(); } catch (_) {}
+    if (cry.ctx.state === "running") { cryHearingOn(); return; }
+  }
+  cryShowOff();
+}
+function cryShowOff() { if (cry.on && !cry.hearing) cryOpen("listen"); }
+
+// The parent stops it: "Yes, stop", or "Leave it off tonight".
+async function cryEnd() {
+  cryClose();                                    // first, so the saving below never shows
+  if (!cry.on) { cry.err = ""; return; }
+  const gap = cry.hearing ? null : cry.gapFrom, why = cry.offWhy;
+  await cryHearingOff("");
+  cry.gapFrom = null;
+  const T = now().getTime();
+  cry.on = false;
+  cryRelease();
+  coachLS.set(CRY_KEY, { from: cry.from || T, heard: gap != null ? gap : T, on: false });
+  if (gap != null) await cryGapWrite(gap, T, why);
+}
+function cryRelease() {
+  if (cry.stream) cry.stream.getTracks().forEach((t) => t.stop());
+  if (cry.ctx && cry.ctx.state !== "closed") cry.ctx.close().catch(() => {});
+  cry.stream = cry.ctx = cry.an = null;
+  if (cry.wake) { cry.wake.release().catch(() => {}); cry.wake = null; }
+}
+// Keep the screen on. Android lets go of this whenever the app leaves the screen,
+// so it's asked for again every time hearing starts. The phone may say no (very low
+// battery); then the "keep it plugged in" line is all there is.
+async function cryWake() {
+  if (cry.wake || !("wakeLock" in navigator) || document.hidden) return;
+  try {
+    cry.wake = await navigator.wakeLock.request("screen");
+    cry.wake.addEventListener("release", () => { cry.wake = null; });
+  } catch (_) { cry.wake = null; }
+}
+
+// ---- The detector -------------------------------------------------------------
+function cryFrame() {
+  if (!cry.an) return;
+  cry.an.getFloatTimeDomainData(cry.buf);
+  let sum = 0;
+  for (let i = 0; i < cry.buf.length; i++) sum += cry.buf[i] * cry.buf[i];
+  cryHear(10 * Math.log10(sum / cry.buf.length + 1e-10), now().getTime());   // loudness in dB
+}
+// One loudness reading in, decisions out. This is all of "how it decides".
+function cryHear(db, T) {
+  const dt = Math.min(500, Math.max(0, T - cry.lastT));
+  cry.lastT = T;
+  cry.level = db;
+  cry.levels.push(db);
+  if (cry.levels.length > CRY.roomWindowSec * 1000 / CRY.frameMs) cry.levels.shift();
+  // The room's normal: the quiet end of the last few minutes, re-read once a second.
+  // White noise is steady, so it IS the normal; breaths between sobs keep it there.
+  if (cry.room == null || T - cry.roomT >= 1000) {
+    const s = cry.levels.slice().sort((a, b) => a - b);
+    cry.room = s[Math.floor(s.length * CRY.roomPercentile / 100)];
+    cry.roomT = T;
+  }
+  const ready = cry.levels.length >= 2000 / CRY.frameMs;   // two seconds of room before judging
+  const loud = ready && db > cry.room + CRY.loudOverRoomDb;
+  if (loud) {
+    if (cry.loudFrom == null) { cry.loudFrom = T; cry.loudMs = 0; }
+    cry.loudMs += dt;
+    cry.lastLoud = T;
+  } else if (cry.loudFrom != null && T - cry.lastLoud > CRY.breathGapSec * 1000) {
+    cry.loudFrom = null; cry.loudMs = 0;                  // a cough, a door: too short, forgotten
+  }
+  if (cry.spell) {
+    if (loud) cry.spell.lastLoud = T;
+    else if (T - cry.spell.lastLoud >= CRY.endAfterQuietSec * 1000) crySpellEnd();
+  } else if (cry.loudMs >= CRY.startAfterLoudSec * 1000) crySpellStart(cry.loudFrom, T);
+  if (!cry.spell) cryRoll(T);
+  if (T - cry.beat > 5000) {   // if the app is closed, this is where the gap starts
+    cry.beat = T;
+    const rec = coachLS.get(CRY_KEY, null);
+    if (rec && rec.on) coachLS.set(CRY_KEY, { ...rec, heard: T });
+  }
+  // The circle: the room's normal fills it to r 32; the dotted ring (r 56) is the line.
+  const disc = cryShown() && $("cry-disc");
+  if (disc) disc.setAttribute("r", Math.max(18, Math.min(88, 32 + (db - cry.room) / CRY.loudOverRoomDb * 24)).toFixed(1));
+}
+
+// ---- The recorder ---------------------------------------------------------------
+// "Nothing cut off": a recorder is always already running. A new one starts every
+// CRY.preRollSec and only the last two are kept, so the older one began at least that
+// long ago. When a cry is confirmed, that one is kept and the cry's start is in it.
+function cryRoll(T) {
+  const last = cry.recs[cry.recs.length - 1];
+  if (last && T - last.t0 < CRY.preRollSec * 1000) return;
+  cry.recs.push(cryRecStart(T));
+  while (cry.recs.length > 2) cryRecDrop(cry.recs.shift());
+}
+function cryRecStart(T) {
+  const type = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+  const mr = new MediaRecorder(cry.stream, type ? { mimeType: type, audioBitsPerSecond: CRY.bitsPerSecond } : { audioBitsPerSecond: CRY.bitsPerSecond });
+  const r = { mr, chunks: [], t0: T, real0: Date.now() };
+  mr.ondataavailable = (e) => { if (e.data && e.data.size) r.chunks.push(e.data); };
+  mr.start();
+  return r;
+}
+function cryRecDrop(r) {
+  r.mr.ondataavailable = null;
+  if (r.mr.state !== "inactive") r.mr.stop();
+}
+function cryRecStop(r) {
+  return new Promise((res) => {
+    const done = () => res(new Blob(r.chunks, { type: r.mr.mimeType || "audio/webm" }));
+    if (r.mr.state === "inactive") { setTimeout(done, 200); return; }
+    r.mr.addEventListener("stop", done, { once: true });
+    r.mr.stop();
+  });
+}
+
+function crySpellStart(at, T) {
+  const keep = cry.recs.shift() || cryRecStart(T);
+  cry.recs.forEach(cryRecDrop); cry.recs = [];
+  cry.spell = { startAt: at, lastLoud: T, rec: keep };
+  cryRender();
+}
+// A quiet minute (or a stop) ends the spell: the sound goes into this phone's
+// storage, the times go into the log for both phones.
+async function crySpellEnd() {
+  const s = cry.spell;
+  if (!s) return;
+  cry.spell = null;
+  cry.loudFrom = null; cry.loudMs = 0;
+  cryRender();
+  const durMs = Date.now() - s.rec.real0;
+  const blob = await cryRecStop(s.rec);
+  let id = null;
+  if (blob.size) {
+    try {
+      id = crypto.randomUUID();
+      await cryDB.put({ id, blob, at: s.startAt, durMs });
+      cryClips.set(id, { at: s.startAt, durMs });
+    } catch (_) { id = null; }   // no storage (private window): the times still reach the log
+  }
+  await cryInsert({ type: "cry", start_at: cryIso(s.startAt), end_at: cryIso(s.lastLoud), note: id ? `clip=${id}` : null });
+  cryCleanup();
+}
+
+// ---- Screens ----------------------------------------------------------------------
+function cryOpen(view) {
+  cry.view = view;
+  cry.confirm = false;
+  $("cry").classList.remove("hidden");
+  document.body.classList.add("cry-on");
+  cryRender();
+  if (view === "listen" && !cry.on && !cry.starting) cryListen();
+}
+// "‹ Leo": the screen goes, the listening doesn't — the Coach and the log stay usable.
+function cryClose() {
+  $("cry").classList.add("hidden");
+  document.body.classList.remove("cry-on");
+  cry.confirm = false;
+}
+const cryState = () => cry.hearing ? (cry.spell ? "rec" : "quiet") : cry.starting ? "starting" : "off";
+function cryTonight() { const s = cryRowsOfNight(now()).filter(isCrySpell); return { n: s.length, ms: cryTotal(s) }; }
+function cryTitle() {
+  const st = cryState();
+  return st === "rec" ? `Recording · ${cryClock(now() - cry.spell.startAt)}`
+    : st === "quiet" ? "Listening" : st === "starting" ? "Starting…" : "Not listening";
+}
+function crySum() {
+  const { n, ms } = cryTonight(), st = cryState();
+  if (st === "rec") return `<b>${cryOrd(n + 1)}</b> spell · <b>${dur(ms + (now() - cry.spell.startAt))}</b> crying tonight`;
+  if (st === "off" && cry.gapFrom != null) return `<b>${n}</b> spell${n === 1 ? "" : "s"} · <b>${dur(ms)}</b> crying, until ${clockTime(new Date(cry.gapFrom))}`;
+  return n ? `<b>${n}</b> crying spell${n === 1 ? "" : "s"} · <b>${dur(ms)}</b> tonight` : "No crying yet tonight";
+}
+function cryListenHTML() {
+  const st = cryState();
+  const sub = st === "rec" ? `he started at ${clockTime(new Date(cry.spell.startAt))}`
+    : st === "quiet" ? `since ${clockTime(new Date(cry.from))}`
+    : st === "starting" ? "If the phone asks, allow the microphone."
+    : cry.err ? cry.err
+    : `Stopped at ${clockTime(new Date(cry.gapFrom))}: ${cry.offWhy}. Nothing after that was heard.`;
+  const btns = st === "starting" ? ""
+    : st === "off" ? `<button class="lc-go" data-act="again">Start listening again</button><button class="lc-stop" data-act="leave">Leave it off tonight</button>`
+    : `<button class="lc-stop" data-act="stop-ask">Stop listening</button>`;
+  const { n, ms } = cryTonight();
+  const sheet = !cry.confirm ? "" : `<div class="cry-dim"></div><div class="cry-sheet">
+      <p class="q">Stop listening?<span>${nightState().isNight ? "Tonight" : "Last night"}: ${n ? `${n} crying spell${n === 1 ? "" : "s"} · ${dur(ms)}` : "no crying"}</span></p>
+      <div class="row"><button class="yes" data-act="stop-yes">✓ Yes, stop</button><button class="no" data-act="stop-no">✕ Keep listening</button></div>
+    </div>`;
+  return `<div class="lc ${st === "quiet" ? "" : st}">
+    <button class="lc-back" data-act="close">‹ Leo</button>
+    <div class="lc-mid">
+      <svg class="lc-ring" viewBox="0 0 200 200" aria-hidden="true"><circle class="o" cx="100" cy="100" r="94"/><circle class="th" cx="100" cy="100" r="56"/><circle id="cry-disc" class="disc" cx="100" cy="100" r="${st === "off" || st === "starting" ? 0 : 18}"/></svg>
+      <p id="cry-title" class="lc-title">${cryTitle()}</p>
+      <p class="lc-sub">${coEsc(sub)}</p>
+    </div>
+    <div class="lc-foot">
+      <p id="cry-sum" class="lc-sum">${crySum()}</p>
+      <p class="lc-plug">🔌 Keep it plugged in and the Leo app open · the screen stays on</p>
+      ${btns}
+    </div>
+  </div>${sheet}`;
+}
+const cryListenSig = () => [cryState(), cry.confirm, cryTonight().n, cry.gapFrom, cry.err].join("|");
+function cryRender() {
+  const host = $("cry-body");
+  if (!host || !cryShown()) return;
+  const listen = cry.view === "listen";
+  $("cry").classList.toggle("listen", listen);
+  host.innerHTML = listen ? cryListenHTML() : cryPlaybackHTML();
+  cry.sig = listen ? cryListenSig() : cryPlaybackSig();
+  if (!listen) { cryPlayUI(); cryProgress(); }
+}
+// Per second, from render(): the clocks as text. Rebuilt only when the state flips,
+// so "Stop listening" never moves under a thumb.
+function tickCry() {
+  if ((cry.view === "listen" ? cryListenSig() : cryPlaybackSig()) !== cry.sig) { cryRender(); return; }
+  if (cry.view !== "listen") return;
+  const t = $("cry-title"), s = $("cry-sum");
+  if (t) t.textContent = cryTitle();
+  if (s) s.innerHTML = crySum();
+}
+function onCryClick(ev) {
+  const t = ev.target.closest("[data-act]");
+  if (!t) return;
+  const act = t.dataset.act;
+  if (act === "close") cryClose();
+  else if (act === "stop-ask") { cry.confirm = true; cryRender(); }
+  else if (act === "stop-no") { cry.confirm = false; cryRender(); }
+  else if (act === "stop-yes" || act === "leave") cryEnd();
+  else if (act === "again") cryListen();
+  else if (act === "play") cryPlay(t.dataset.clip);
+  else if (act === "seek") {
+    const r = t.getBoundingClientRect();
+    cryPlay(t.dataset.clip, Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)));
+  }
+}
+
+// The night card's button: shown at night, and whenever this phone is listening.
+// By day, until noon: "Last night: 40m crying · Listen ›", which opens the playback.
+let _cryBtnSig = null;
+function renderCryButtons(ns) {
+  const btn = $("leo-listen-btn"), last = $("leo-cry-last-btn");
+  if (!btn || !last) return;
+  const show = ns.isNight || cry.on;
+  const spells = !ns.isNight && minOfDay(now()) < 720 ? cryRowsOfNight(now()).filter(isCrySpell) : [];
+  const sig = `${show}:${cry.on}:${cry.hearing}:${cry.from}:${cry.gapFrom}:${spells.length}:${cryTotal(spells)}`;
+  if (sig === _cryBtnSig) return;
+  _cryBtnSig = sig;
+  last.classList.toggle("hidden", !spells.length);
+  last.innerHTML = `🎧 Last night: ${dur(cryTotal(spells))} crying <span>· Listen ›</span>`;
+  btn.classList.toggle("hidden", !show);
+  btn.innerHTML = cry.on && cry.hearing ? `🎙️ Listening for crying <span>· since ${clockTime(new Date(cry.from))}</span>`
+    : cry.on && cry.gapFrom != null ? `🎙️ Not listening <span>· stopped at ${clockTime(new Date(cry.gapFrom))}</span>`
+    : `🎙️ Listen for crying <span>· all night</span>`;
+}
+
+// ---- In the log. ▶ plays on the phone that has the recording; the other phone
+// shows 🔒 (Q1 a: the sound never leaves the phone that listened). 🗑 removes the
+// row and, on this phone, its recording.
+// Once a recording has deleted itself (older than CRY.keepNights) there is nothing
+// to play anywhere, so neither phone shows ▶ or 🔒 for it — the row and its times stay.
+const cryKeepFrom = (T) => cryNightFrom(T.getTime()) - (CRY.keepNights - 1) * 86400000;
+function cryHave(e) {
+  const id = cryClipId(e);
+  if (id && cryClips.has(id)) return "play";
+  return new Date(e.start_at).getTime() >= cryKeepFrom(now()) ? "lock" : "gone";
+}
+// Q3 a: the last 14 nights. Runs at start and after every saved spell; the log's
+// rows are never touched.
+async function cryCleanup(T) {
+  const from = cryKeepFrom(T || now());
+  let n = 0;
+  for (const [id, c] of [...cryClips]) {
+    if (c.at >= from) continue;
+    try { await cryDB.del(id); } catch (_) { continue; }
+    cryClips.delete(id);
+    n++;
+  }
+  return n;
+}
+// What this phone holds, read once at start. The sound itself stays on disk.
+cryDB.all()
+  .then((all) => { for (const c of all) cryClips.set(c.id, { at: c.at, durMs: c.durMs }); })
+  .catch(() => {})
+  .then(() => cryCleanup())
+  .then(() => renderLog("leo-log-list"));
+
+const cryAudio = new Audio();
+async function cryPlay(id, frac) {
+  const a = cryAudio;
+  if (id === cry.playing) {
+    if (frac == null && !a.paused) { a.pause(); return; }
+  } else {
+    const clip = await cryDB.get(id).catch(() => null);
+    if (!clip) return;
+    if (a.src) URL.revokeObjectURL(a.src);
+    a.src = URL.createObjectURL(clip.blob);
+    cry.playing = id;
+  }
+  if (frac != null) {   // a tap along the bar: skip to there
+    const to = frac * cryClips.get(id).durMs / 1000;
+    if (a.readyState >= 1) a.currentTime = to;
+    else a.addEventListener("loadedmetadata", () => { a.currentTime = to; }, { once: true });
+  }
+  a.play().catch(() => {});
+}
+function cryPlayUI() {
+  const on = !!cry.playing && !cryAudio.paused;
+  document.querySelectorAll("button[data-clip]").forEach((b) => {
+    const me = on && b.dataset.clip === cry.playing;
+    b.textContent = me ? "⏸" : "▶";
+    b.classList.toggle("on", me);
+  });
+  document.querySelectorAll(".pb-row[data-pb]").forEach((r) => r.classList.toggle("on", on && r.dataset.pb === cry.playing));
+}
+// The morning playback's bar and "1:12 / 9:20". The clip's length is our own
+// measure: a phone's recording doesn't say how long it is until it has played.
+function cryProgress() {
+  const id = cry.playing, c = id && cryClips.get(id);
+  const row = c && document.querySelector(`.pb-row[data-pb="${id}"]`);
+  if (!row) return;
+  row.querySelector(".pb-bar i").style.width = Math.min(100, cryAudio.currentTime * 100000 / c.durMs) + "%";
+  row.querySelector(".el").textContent = mmss(cryAudio.currentTime * 1000);
+}
+["play", "pause", "ended"].forEach((ev) => cryAudio.addEventListener(ev, cryPlayUI));
+cryAudio.addEventListener("timeupdate", cryProgress);
+
+function cryPlayEl(e) {
+  const id = cryClipId(e), have = cryHave(e);
+  if (have === "play") {
+    const b = document.createElement("button");
+    b.className = "play-btn";
+    b.dataset.clip = id;
+    b.setAttribute("aria-label", "Play");
+    const playing = cry.playing === id && !cryAudio.paused;   // the log redraws while it plays
+    b.textContent = playing ? "⏸" : "▶";
+    b.classList.toggle("on", playing);
+    b.addEventListener("click", () => cryPlay(id));
+    return b;
+  }
+  const s = document.createElement("span");
+  if (have === "lock") { s.className = "play-off"; s.textContent = "🔒"; s.title = "The recording is on the phone that listened"; }
+  return s;
+}
+function cryLogRow(e) {
+  const gap = isCryGap(e);
+  const a = new Date(e.start_at), b = new Date(e.end_at || e.start_at);
+  const li = document.createElement("li");
+  li.className = `log-item ${gap ? "gap" : "cry"}`;
+  li.innerHTML = `<span class="log-emoji">${gap ? "◌" : "😢"}</span><div class="log-body"><div class="log-title"></div></div>`;
+  li.querySelector(".log-title").textContent = gap
+    ? `Not listening ${crySpan(a, b, "–")}${e.note ? ` · ${e.note}` : ""}`
+    : `Cried ${crySpan(a, b, "–")} · ${dur(b - a)}`;
+  if (!gap) li.appendChild(cryPlayEl(e));
+  // Same inline two-step confirm as every other row — never browser confirm().
+  const del = document.createElement("button");
+  del.className = "del-btn"; del.textContent = "🗑";
+  del.addEventListener("click", () => {
+    const wrap = document.createElement("span");
+    wrap.className = "del-confirm";
+    wrap.innerHTML = `<button class="del-yes">Delete</button><button class="del-no">Keep</button>`;
+    del.replaceWith(wrap);
+    wrap.querySelector(".del-yes").addEventListener("click", () => cryRemove(e));
+    wrap.querySelector(".del-no").addEventListener("click", () => wrap.replaceWith(del));
+  });
+  li.appendChild(del);
+  return li;
+}
+async function cryRemove(e) {
+  const id = cryClipId(e);
+  if (id && cryClips.has(id)) {
+    if (cry.playing === id) { cryAudio.pause(); cry.playing = null; }
+    try { await cryDB.del(id); } catch (_) {}
+    cryClips.delete(id);
+  }
+  if (cryFake) { events = events.filter((x) => x.id !== e.id); _redrawAll(); return; }
+  await deleteEvent(e.id);
+}
+// ---- The morning playback: last night's spells, oldest first so it reads like the
+// night, each with ▶ and its length; the gaps under them. The app doesn't sort,
+// label or judge them — the parents listen and decide.
+function cryPlaybackHTML() {
+  const T = now(), ns = nightState(null, null, T);
+  const rows = cryRowsOfNight(T), spells = rows.filter(isCrySpell), gaps = rows.filter(isCryGap);
+  const a = ns.anchorDate, b = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 1);
+  const day = (d) => `${d.toLocaleDateString([], { weekday: "short" })} ${d.getDate()}`;
+  const rec = coachLS.get(CRY_KEY, null);
+  const listened = !rec || !rec.from || cryNightFrom(rec.from) !== cryNightFrom(T.getTime()) ? ""
+    : cry.on && cry.hearing ? ` · listening since ${clockTime(new Date(rec.from))}`
+    : ` · listened ${crySpan(new Date(rec.from), new Date(rec.heard), " – ")}`;
+  const row = (e) => {
+    const id = cryClipId(e), have = cryHave(e), t0 = new Date(e.start_at), t1 = new Date(e.end_at);
+    return `<li class="pb-row"${have === "play" ? ` data-pb="${id}"` : ""}>`
+      + (have === "play" ? `<button class="pb-play" data-act="play" data-clip="${id}" aria-label="Play">▶</button>`
+        : have === "lock" ? `<span class="play-off pb-lock" title="The recording is on the phone that listened">🔒</span>`
+        : `<span class="pb-lock"></span>`)
+      + `<div class="pb-body"><div class="pb-span">${crySpan(t0, t1, " – ")}</div>`
+      + (have === "play" ? `<div class="pb-bar" data-act="seek" data-clip="${id}"><i></i></div><div class="pb-time"><span class="el">0:00</span> / ${mmss(cryClips.get(id).durMs)}</div>` : "")
+      + `</div><div class="pb-len">${dur(t1 - t0)}</div></li>`;
+  };
+  return `<div class="pb">
+    <button class="pb-back" data-act="close">‹ Leo</button>
+    <h2>${ns.isNight ? "Tonight's crying" : "Last night's crying"}</h2>
+    <p class="pb-sub">${day(a)} → ${day(b)} ${b.toLocaleDateString([], { month: "short" })}${listened}</p>
+    <div class="pb-sum"><b>${dur(cryTotal(spells))}</b><span>of crying, in ${spells.length} spell${spells.length === 1 ? "" : "s"}</span></div>
+    ${spells.length ? `<ul class="pb-list">${spells.map(row).join("")}</ul>` : `<p class="pb-note">No crying was heard ${ns.isNight ? "tonight" : "last night"}.</p>`}
+    ${spells.some((e) => cryHave(e) === "lock") ? `<p class="pb-note">🔒 The recordings are on the phone that listened.</p>` : ""}
+    ${gaps.map((g) => `<div class="gap-row"><span>◌</span><span><b>Not listening ${crySpan(new Date(g.start_at), new Date(g.end_at), " – ")}</b>${g.note ? ` · ${coEsc(g.note)}` : ""}. Any crying then wasn't heard.</span></div>`).join("")}
+  </div>`;
+}
+const cryPlaybackSig = () => ["pb", cryRowsOfNight(now()).map((e) => e.id).join(), cryClips.size, cry.hearing].join("|");
+
+// "😢 Crying tonight 21m in 3 spells", at the top of tonight's log.
+function renderCryTotal(show) {
+  const el = $("leo-cry-total");
+  if (!el) return;
+  const spells = show ? cryRowsOfNight(now()).filter(isCrySpell) : [];
+  el.classList.toggle("hidden", !spells.length);
+  if (!spells.length) return;
+  const locked = spells.some((e) => cryHave(e) === "lock");
+  el.innerHTML = `<span class="t">😢 Crying tonight</span><b>${dur(cryTotal(spells))}</b><span class="n">in ${spells.length} spell${spells.length === 1 ? "" : "s"}</span>`
+    + (locked ? `<span class="w">🔒 The recordings are on the phone that listened.</span>` : "");
+}
+
+function cryVisibility() {
+  if (!cry.on) return;
+  if (document.hidden) cryHearingOff("the app left the screen");
+  else cryComeBack();
+}
+
+// After sign-in. If the app was closed while it listened (Android shut it, or it was
+// swiped away), this night shows "Not listening" from the last moment it heard; an
+// older night just gets its gap row.
+async function cryInit() {
+  const rec = coachLS.get(CRY_KEY, null);
+  if (!rec || !rec.on || cry.on) return;
+  const T = now().getTime();
+  if (cryNightFrom(rec.heard) === cryNightFrom(T)) {
+    cry.on = true; cry.from = rec.from; cry.gapFrom = rec.heard; cry.offWhy = "the app was closed";
+    cryOpen("listen");
+    return;
+  }
+  coachLS.set(CRY_KEY, { ...rec, on: false });
+  await cryGapWrite(rec.heard, Math.min(T, nightState(null, null, new Date(rec.heard)).morningAt.getTime()), "the app was closed");
+}
+
+// ============================================================
 //  11. WIRING — every button via addEventListener (no inline onclick)
 // ============================================================
 $("login-form").addEventListener("submit", handleLogin);
@@ -4992,6 +5661,12 @@ $("leo-coach-btn").addEventListener("click", () => openCoach());
 $("coach").addEventListener("click", onCoachClick);
 $("coach").addEventListener("change", onCoachChange);
 $("coach").addEventListener("submit", onCoachSubmit);
+// Cry listener: the night card's button, the full-screen listener, and the app
+// leaving / coming back to the screen.
+$("leo-listen-btn").addEventListener("click", () => cryOpen("listen"));
+$("leo-cry-last-btn").addEventListener("click", () => cryOpen("playback"));
+$("cry").addEventListener("click", onCryClick);
+document.addEventListener("visibilitychange", cryVisibility);
 $("grow-save").addEventListener("click", saveGrowth);
 
 // "⋯ More" menu — the old screens, kept just in case
@@ -5029,6 +5704,15 @@ document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("cli
 //   leoDebug.at("17:25")
 //   leoDebug.alerts()      → late-nap should be there, with key latenap:<id>
 //   leoDebug.clear()       → back to the real clock; reload to drop the fake data
+//
+// The cry listener, with no baby and no microphone — same detector, same recorder,
+// same rows; only the sound is made up, and its rows stay in memory:
+//   leoDebug.fakeMic()     → then tap 🎙️ Listen for crying: it hears a white-noise room
+//   leoDebug.fakeCry(8)    → he cries for 8 s (5 s starts a recording; a quiet minute saves it)
+//   leoDebug.fakeGap(20)   → the app leaves the screen for 20 minutes, then comes back
+//   leoDebug.fakeMicStop() → the microphone goes away ("Not listening")
+//   leoDebug.cryClips()    → the recordings on this phone
+//   leoDebug.cryCleanup(14) → the 14-night clean-up, run as if 14 nights from now
 function _redrawAll() {
   render(); renderDay(); renderLog("leo-log-list"); renderAlerts(true); renderSettings();
   if (tabOpen("sleep")) renderSleep();
@@ -5104,6 +5788,62 @@ window.leoDebug = {
     try { localStorage.removeItem(ALERT_DISMISS_KEY); } catch (e) {}
     renderAlerts(true);
     return "dismissals cleared";
+  },
+  // A generated room: steady white noise, plus a loud warbling "cry" while fakeCry
+  // runs — 2.7 s of sobbing, then a 0.7 s breath, like the mockup's picture.
+  fakeMic() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = ctx.createMediaStreamDestination();
+    const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.03;
+    const room = ctx.createBufferSource();
+    room.buffer = buf; room.loop = true; room.connect(dest); room.start();
+    const osc = ctx.createOscillator(), vol = ctx.createGain();
+    osc.type = "sawtooth"; vol.gain.value = 0;
+    osc.connect(vol); vol.connect(dest); osc.start();
+    let timer = null;
+    cryFake = {
+      ctx, dest,
+      cry(on) {
+        clearInterval(timer);
+        vol.gain.value = 0;
+        if (!on) return;
+        let t = 0;
+        timer = setInterval(() => {
+          t = (t + 0.1) % 3.4;
+          vol.gain.value = t < 2.7 ? 0.4 : 0;
+          osc.frequency.value = 420 + 80 * Math.sin(t * 6);
+        }, 100);
+      },
+    };
+    return "fake microphone ready — tap 🎙️ Listen for crying. Its rows stay in memory.";
+  },
+  fakeCry(sec) {
+    if (!cryFake) return "run leoDebug.fakeMic() first";
+    cryFake.cry(true);
+    setTimeout(() => cryFake.cry(false), (sec || 8) * 1000);
+    return `crying for ${sec || 8} s — recording starts after ${CRY.startAfterLoudSec} s, saved after ${CRY.endAfterQuietSec} s of quiet`;
+  },
+  // Exactly what the app does when it leaves the screen and comes back, with the
+  // clock moved on in between.
+  async fakeGap(min) {
+    await cryHearingOff("the app left the screen");
+    TIME_SHIFT_MS += (min || 20) * 60000;
+    await cryComeBack();
+    return `away ${min || 20} min — now() = ${now().toLocaleString()}`;
+  },
+  fakeMicStop() {
+    const t = cry.stream && cry.stream.getAudioTracks()[0];
+    if (!t) return "not listening";
+    t.stop();
+    t.dispatchEvent(new Event("ended"));   // what a real microphone that goes away fires
+    return "microphone gone";
+  },
+  cryClips() { return [...cryClips].map(([id, c]) => ({ id, at: new Date(c.at).toLocaleString(), seconds: Math.round(c.durMs / 1000) })); },
+  async cryCleanup(nights) {
+    const n = await cryCleanup(new Date(now().getTime() + (nights || 0) * 86400000));
+    renderLog("leo-log-list");
+    return `${n} recording(s) deleted`;
   },
 };
 

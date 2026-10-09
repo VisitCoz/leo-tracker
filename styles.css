@@ -1082,3 +1082,96 @@ body.coach-on { overflow: hidden; }
   outline: 3px solid var(--co-gold); outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) { #coach .co-btn { transition: none; } }
+
+/* ============================================================
+   Cry listener — the phone by the crib (mockup 2026-10-07, Look C "Almost black").
+   The listening screen is on all night next to a sleeping baby, so it takes the
+   Coach's night colours: near-black, warm, no blue.
+   ============================================================ */
+body.cry-on { overflow: hidden; }
+#cry {
+  --cn-bg: #0D0E10; --cn-surface: #16181C; --cn-ink: #D6B697; --cn-text: #B79F88; --cn-muted: #7A6A5D; --cn-line: #24262B;
+  --cn-sage: #4D5F4F; --cn-clay: #7E4B38; --cn-clay-ink: #D39878; --cn-gold: #7E6330; --cn-gold-ink: #CFAF6F; --cn-btn-ink: #F0DCC6;
+  position: fixed; inset: 0; z-index: 45; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg); color: var(--ink);
+}
+#cry.listen { background: var(--cn-bg); }
+#cry .cry-wrap {
+  max-width: 520px; min-height: 100%; margin: 0 auto; display: flex; flex-direction: column;
+  padding: calc(10px + env(safe-area-inset-top)) 16px calc(22px + env(safe-area-inset-bottom));
+}
+#cry p { margin: 0; }
+
+#cry .lc { display: flex; flex-direction: column; flex: 1; font-family: "Mulish", "Inter", system-ui, sans-serif; color: var(--cn-text); }
+#cry .lc-back { align-self: flex-start; min-height: 44px; padding: 0 4px; background: none; border: 0; color: var(--cn-muted); font: 700 15px "Mulish", sans-serif; cursor: pointer; }
+#cry .lc-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding-bottom: 10px; }
+#cry .lc-ring { width: 230px; height: 230px; display: block; }
+#cry .lc-ring .o { fill: none; stroke: var(--cn-line); stroke-width: 2; }
+#cry .lc-ring .th { fill: none; stroke: var(--cn-muted); stroke-width: 1.5; stroke-dasharray: 3 5; opacity: .8; }
+#cry .lc-ring .disc { fill: var(--cn-sage); transition: r .12s linear; }
+#cry .lc.rec .lc-ring .disc { fill: var(--cn-clay); }
+#cry .lc.rec .lc-ring .o { stroke: #3a2a24; }
+#cry .lc.off .lc-ring .o, #cry .lc.starting .lc-ring .o { stroke-dasharray: 6 10; }
+#cry .lc.off .lc-ring .th, #cry .lc.starting .lc-ring .th { opacity: .35; }
+#cry .lc-title { font: 700 20px/1.25 "Mulish", sans-serif; color: var(--cn-ink); margin: 18px 0 4px; font-variant-numeric: tabular-nums; }
+#cry .lc.rec .lc-title { color: var(--cn-clay-ink); }
+#cry .lc.off .lc-title { color: var(--cn-gold-ink); }
+#cry .lc-sub { font-size: 14px; color: var(--cn-muted); max-width: 290px; line-height: 1.45; }
+#cry .lc-foot { text-align: center; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+#cry .lc-sum { font-size: 15px; color: var(--cn-text); }
+#cry .lc-sum b { color: var(--cn-ink); font-weight: 800; font-variant-numeric: tabular-nums; }
+#cry .lc-plug { font-size: 12.5px; color: var(--cn-muted); margin-bottom: 4px; }
+#cry .lc-stop { width: 100%; min-height: 50px; border-radius: 14px; border: 1px solid var(--cn-line); background: transparent; color: var(--cn-muted); font: 700 15px "Mulish", sans-serif; cursor: pointer; }
+#cry .lc-go { width: 100%; min-height: 60px; border-radius: 14px; border: none; background: var(--cn-sage); color: var(--cn-btn-ink); font: 800 17px "Mulish", sans-serif; cursor: pointer; }
+
+/* "Stop listening?" — asks once, like "He's up for the day", so a bump at 3am can't stop it. */
+#cry .cry-dim { position: fixed; inset: 0; background: rgba(0,0,0,.55); }
+#cry .cry-sheet {
+  position: fixed; left: 10px; right: 10px; bottom: calc(22px + env(safe-area-inset-bottom)); max-width: 500px; margin: 0 auto;
+  background: var(--cn-surface); border: 1px solid var(--cn-line); border-radius: 20px; padding: 16px 14px 14px; font-family: "Mulish", sans-serif;
+}
+#cry .cry-sheet .q { margin: 0 0 12px; text-align: center; font-size: 15px; font-weight: 700; color: var(--cn-gold-ink); line-height: 1.4; }
+#cry .cry-sheet .q span { display: block; font-weight: 600; color: var(--cn-muted); font-size: 13.5px; margin-top: 3px; }
+#cry .cry-sheet .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+#cry .cry-sheet .yes { background: var(--cn-gold); color: var(--cn-btn-ink); border: none; border-radius: 14px; min-height: 54px; font: 800 16px "Mulish", sans-serif; cursor: pointer; }
+#cry .cry-sheet .no { background: transparent; color: var(--cn-text); border: 1px solid var(--cn-line); border-radius: 14px; min-height: 54px; font: 700 16px "Mulish", sans-serif; cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { #cry .lc-ring .disc { transition: none; } }
+
+/* In the log: the crying rows (▶ on the phone that listened, 🔒 on the other), the
+   night's total, and the grey "Not listening" row. */
+.play-btn { flex: none; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--pink); color: #2a1320; font-size: 13px; font-weight: 700; cursor: pointer; display: grid; place-items: center; }
+.play-btn.on { background: var(--sage); color: #14241c; }
+.play-off { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 1px dashed #4a3a52; color: #8a7690; display: grid; place-items: center; font-size: 13px; }
+.cry-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; background: var(--bg-card-2); border-radius: 12px; padding: 10px 12px; margin: 0 0 8px; }
+.cry-total .t { font-size: 13.5px; color: var(--ink); }
+.cry-total b { font-family: "Fraunces", Georgia, serif; font-size: 22px; font-weight: 600; color: var(--pink); font-variant-numeric: tabular-nums; }
+.cry-total .n { font-size: 12.5px; color: var(--ink-dim); }
+.cry-total .w { flex-basis: 100%; font-size: 12px; color: #8a7690; margin-top: 2px; }
+.log-item.gap { color: var(--ink-dim); }
+.log-item.gap .log-title { font-weight: 500; font-size: 13.5px; }
+
+/* The morning playback — the app's normal colours: it's read in daylight. */
+#cry .pb { display: flex; flex-direction: column; }
+#cry .pb-back { align-self: flex-start; min-height: 44px; padding: 0 2px; background: none; border: none; color: var(--pink); font: 600 15px "Inter", system-ui, sans-serif; cursor: pointer; }
+#cry .pb h2 { font-family: "Fraunces", Georgia, serif; font-size: 26px; font-weight: 600; margin: 8px 0 2px; color: var(--ink); }
+#cry .pb-sub { font-size: 13px; color: var(--ink-dim); margin-bottom: 12px; }
+#cry .pb-sum { display: flex; align-items: baseline; gap: 10px; background: var(--bg-card); border-radius: 16px; padding: 14px 16px; margin-bottom: 12px; }
+#cry .pb-sum b { font-family: "Fraunces", Georgia, serif; font-size: 40px; font-weight: 600; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+#cry .pb-sum span { color: var(--ink-dim); font-size: 14px; }
+#cry .pb-list { list-style: none; margin: 0; padding: 4px 14px; background: var(--bg-card); border-radius: 16px; }
+#cry .pb-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid #36283d; }
+#cry .pb-row:first-child { border-top: none; }
+#cry .pb-play { flex: none; width: 46px; height: 46px; border-radius: 50%; border: none; background: var(--pink); color: #2a1320; font-size: 16px; font-weight: 700; cursor: pointer; display: grid; place-items: center; }
+#cry .pb-row.on .pb-play { background: var(--sage); color: #14241c; }
+#cry .pb-lock { width: 46px; height: 46px; }
+#cry .pb-body { flex: 1; min-width: 0; }
+#cry .pb-span { font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+#cry .pb-bar { position: relative; height: 5px; border-radius: 999px; background: rgba(0,0,0,.35); margin: 8px 0 4px; cursor: pointer; }
+#cry .pb-bar::before { content: ""; position: absolute; inset: -10px 0; }   /* a finger-sized target */
+#cry .pb-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 999px; background: var(--pink); }
+#cry .pb-row.on .pb-bar i { background: var(--sage); }
+#cry .pb-time { font-size: 11.5px; color: #8a7690; font-variant-numeric: tabular-nums; }
+#cry .pb-len { font-family: "Fraunces", Georgia, serif; font-size: 19px; color: var(--sage); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#cry .pb-note { font-size: 13px; color: var(--ink-dim); margin-top: 10px; }
+#cry .gap-row { display: flex; gap: 10px; align-items: center; background: var(--bg-card); border: 1px dashed #4a3a52; border-radius: 12px; padding: 10px 12px; margin-top: 10px; color: var(--ink-dim); font-size: 13.5px; }
+#cry .gap-row b { color: var(--ink); }

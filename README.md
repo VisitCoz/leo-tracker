@@ -123,9 +123,12 @@ open the HTTPS link on the phone:
 ## Background push (wake-window alert when the app is closed)
 
 This is live. The in-app banner ticks the wake timer while the app is open; when the app is
-**closed**, `wake-watch` sends one lock-screen alert when Leo's wake window ends (its length comes
-from his age, `AGE_DEFAULTS` in `app.js`, not a fixed 90 minutes). Set-up, one time per Supabase
-project:
+**closed**, `wake-watch` (run every minute) sends lock-screen check-ins: the first when Leo's wake
+window opens, then one every 15 minutes until his sleep is logged (in the window → good time to
+wind down → past the window), plus a few clock alerts such as "Bedtime window open". The window
+comes from his age (`AGE_DEFAULTS` in `app.js`, plus any override in ⚙️ Sleep settings), which
+`wake-watch` reads from the `settings` row the app writes; it is not a fixed 90 minutes. Set-up,
+one time per Supabase project:
 
 1. **Generate a VAPID keypair:** `npx web-push generate-vapid-keys`
 2. **Public key →** `config.js` (`VAPID_PUBLIC_KEY`) — safe to ship.
@@ -141,7 +144,7 @@ project:
    Push only works for a PWA **installed to the Home Screen via Safari** (iOS 16.4+).
 
 > Note: a notification can't *tick* a live countdown — the OS tray can't run a timer. The live
-> per-second countdown lives in the in-app banner; the push is a single alert when the window ends.
+> per-second countdown lives in the in-app banner; the pushes are check-ins every 15 minutes.
 
 ---
 

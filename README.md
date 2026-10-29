@@ -113,15 +113,19 @@ Then open the printed `http://localhost:3000` address.
 
 ## Deploy
 
-Push to a GitHub repo and enable **GitHub Pages** (same as `euro-trip-2026`). Open the HTTPS
-link on your phone → Share → **Add to Home Screen**.
+GitHub Pages is on (branch `main`, path `/`), so a merge to `main` is a deploy. To install the app,
+open the HTTPS link on the phone:
+- **Android (Chrome):** ⋮ menu → **Install app** (or **Add to Home screen**).
+- **iPhone (Safari):** Share → **Add to Home Screen**.
 
 ---
 
 ## Background push (wake-window alert when the app is closed)
 
-The in-app banner ticks the wake timer while the app is open. To also get a lock-screen alert
-at the 90-minute mark when the app is **closed**, set up Web Push (one time):
+This is live. The in-app banner ticks the wake timer while the app is open; when the app is
+**closed**, `wake-watch` sends one lock-screen alert when Leo's wake window ends (its length comes
+from his age, `AGE_DEFAULTS` in `app.js`, not a fixed 90 minutes). Set-up, one time per Supabase
+project:
 
 1. **Generate a VAPID keypair:** `npx web-push generate-vapid-keys`
 2. **Public key →** `config.js` (`VAPID_PUBLIC_KEY`) — safe to ship.
@@ -133,11 +137,11 @@ at the 90-minute mark when the app is **closed**, set up Web Push (one time):
 5. **Deploy the functions:** `npx supabase functions deploy ask-leo wake-watch --no-verify-jwt`
    (wake-watch is called by cron, so it skips JWT).
 6. **On each phone:** open the installed app and tap 🔔 to grant alerts (this also stores the
-   push subscription). **iPhone:** Web Push only works for a PWA **installed to the Home Screen
-   via Safari** (iOS 16.4+).
+   push subscription). **Android:** works in Chrome once the app is installed. **iPhone:** Web
+   Push only works for a PWA **installed to the Home Screen via Safari** (iOS 16.4+).
 
 > Note: a notification can't *tick* a live countdown — the OS tray can't run a timer. The live
-> per-second countdown lives in the in-app banner; the push is a single alert at the 90-min mark.
+> per-second countdown lives in the in-app banner; the push is a single alert when the window ends.
 
 ---
 

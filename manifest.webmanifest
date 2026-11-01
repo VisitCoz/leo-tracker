@@ -1,7 +1,7 @@
 {
   "name": "Leo Tracker",
   "short_name": "Leo",
-  "description": "Calm baby tracker — feeds, sleep, milestones.",
+  "description": "Calm baby tracker: sleep, growth, firsts.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

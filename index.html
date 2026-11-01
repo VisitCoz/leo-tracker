@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <title>Leo Tracker</title>
-  <meta name="description" content="Calm baby tracker for Leo — feeds, sleep, milestones, AI insights." />
+  <meta name="description" content="Calm baby tracker for Leo: sleep, growth and firsts." />
 
   <!-- PWA: makes it installable to the Home Screen -->
   <link rel="manifest" href="manifest.webmanifest" />
@@ -14,16 +14,16 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Leo" />
 
-  <!-- Fonts: Fraunces (serif headings) + Inter (clean body) -->
+  <!-- Fonts: Fraunces (headings) + Inter (body) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Mulish:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
 
-  <!-- ============ LOGIN VIEW ============ -->
+  <!-- ============ SIGN IN ============ -->
   <main id="auth-view" class="view">
     <div class="auth-card">
       <h1 class="brand">Leo</h1>
@@ -33,364 +33,115 @@
         <input id="email" type="email" inputmode="email" autocomplete="username" required />
         <label for="password">Password</label>
         <input id="password" type="password" autocomplete="current-password" required />
-        <button id="login-btn" type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <button type="submit" class="btn btn-primary">Sign in</button>
       </form>
       <p id="auth-msg" class="auth-msg" role="status" aria-live="polite"></p>
     </div>
   </main>
 
-  <!-- ============ APP VIEW ============ -->
+  <!-- ============ APP ============ -->
   <main id="app-view" class="view hidden">
-
     <header class="topbar">
       <div>
         <h1 class="topbar-title">Leo</h1>
-        <p id="age-line" class="age-line">—</p>
+        <p id="age-line" class="age-line"></p>
       </div>
-      <div class="topbar-actions">
-        <button id="bell-btn" class="icon-btn" title="Enable alerts" aria-label="Enable alerts">🔔</button>
-        <button id="more-btn" class="icon-btn" title="More" aria-label="More">⋯</button>
-        <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
-      </div>
-      <!-- More menu: settings + the old screens, kept just in case -->
-      <div id="more-menu" class="more-menu hidden">
-        <button data-tab="settings">⚙️ Sleep settings</button>
-        <button data-tab="home">🍼 Feeds &amp; milestones</button>
-        <button data-tab="planner">🗓️ Day planner</button>
-      </div>
+      <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
     </header>
 
-    <!-- Persistent wake/sleep timer — stays visible on every tab while the app is open -->
-    <div id="topbanner" class="topbanner hidden" aria-live="polite"></div>
-
-    <!-- ============ LEO — new default home (sleep-first) ============ -->
-    <section id="tab-leo" class="tab">
-      <!-- 0. Alerts — priority-ordered, dismissible, re-fire on the next occurrence -->
-      <div id="leo-alerts" class="leo-alerts" aria-live="polite"></div>
-
-      <!-- 1. The headline. Two tiers, one rule: the HERO is the clock running right
-           now; the PAIR below is accumulated context that only moves when a sleep
-           ends. Every number carries a plain-English line saying what it means. -->
-      <section id="leo-wake" class="card wake-card zone-green">
-        <p id="leo-wake-eyebrow" class="card-eyebrow">Awake for</p>
-        <p id="leo-wake-time" class="wake-time">—</p>
-        <p id="leo-wake-status" class="wake-status">Log a sleep to start the wake window</p>
-        <!-- By day: two clocks the same size, awake and since his last full feed.
-             Hidden at night: the night card is the one big clock above. -->
-        <div id="leo-two" class="lb-two hidden">
-          <div class="lb-c">
-            <p id="leo-two-eyebrow" class="card-eyebrow">Awake for</p>
-            <p id="leo-two-time" class="lb-num">—</p>
-            <p id="leo-two-status" class="lb-ans"></p>
-            <div id="leo-ww-track" class="ww-track">
-              <div id="leo-ww-fill" class="ww-fill"></div>
-              <div id="leo-ww-band" class="ww-band"></div>
-            </div>
-          </div>
-          <div class="lb-c">
-            <p class="card-eyebrow">Since full feed</p>
-            <p id="leo-feed-time" class="lb-num">—</p>
-            <p id="leo-feed-status" class="lb-ans"></p>
-            <div id="leo-fbar" class="fbar"><i id="leo-fbar-fill"></i><em></em><small id="leo-fbar-mark"></small></div>
-          </div>
+    <!-- ===== SLEEP ===== -->
+    <section class="tab" id="tab-sleep">
+      <section class="card hero zone-awake" id="hero">
+        <p class="eyebrow" id="hero-eye">Awake for</p>
+        <p class="hero-time" id="hero-time">—</p>
+        <p class="hero-sub" id="hero-sub"></p>
+        <div class="pair">
+          <div><b id="pair-a">—</b><span id="pair-a-lab">slept last night</span></div>
+          <div><b id="pair-b">—</b><span id="pair-b-lab">naps today</span></div>
         </div>
-        <p id="leo-wake-why" class="wake-why"></p>
-        <div id="leo-wake-pair" class="wake-pair">
-          <div><span id="leo-pair-a" class="pair-num">—</span><span id="leo-pair-a-lab" class="pair-lab">—</span></div>
-          <div><span id="leo-pair-b" class="pair-num">—</span><span id="leo-pair-b-lab" class="pair-lab">—</span></div>
-        </div>
-        <div id="leo-sleep-actions" class="leo-sleep-actions"></div>
-        <button id="leo-fix-btn" class="leo-fixlink">✎ forgot to log? fix the last sleep time</button>
-        <!-- Static sibling, never inside #leo-sleep-actions: that host is wiped on every state change. -->
-        <button id="leo-coach-btn" class="coach-launch" type="button">🧭 Coach <span>· what do we do now?</span></button>
-        <!-- Cry listener: at night "Listen for crying"; in the morning, until noon,
-             last night's crying with a way to play it back. Static, like the Coach button. -->
-        <button id="leo-listen-btn" class="coach-launch hidden" type="button"></button>
-        <button id="leo-cry-last-btn" class="coach-launch hidden" type="button"></button>
+        <button class="btn btn-sleep" id="sleep-btn">😴 He's asleep</button>
       </section>
 
-      <!-- 3. The log. At night this is scoped to the night and titled "Tonight" —
-           filtering on the calendar day showed "No entries yet today" at 1am. -->
       <section class="card">
         <div class="card-head">
-          <h2 id="leo-log-title">Today's log</h2>
-          <button id="leo-export-btn" class="link-btn">Export CSV</button>
+          <h2>Sleep log</h2>
+          <div class="daytabs">
+            <button class="on" data-day="0">Today</button>
+            <button data-day="1">Yesterday</button>
+          </div>
         </div>
-        <p class="leo-log-hint">Tap ✏️ to fix a time · 🗑 to remove</p>
-        <div id="leo-cry-total" class="cry-total hidden"></div>
-        <ul id="leo-log-list" class="log-list"><li class="log-empty">No entries yet today.</li></ul>
-      </section>
-
-      <!-- 6. Ask Leo's AI -->
-      <section id="leo-ask-card" class="card leo-ask">
-        <div class="leo-ask-av">💬</div>
-        <div class="leo-ask-t"><b>Ask about Leo</b><span>I know his logs — sleep, feeds, growth</span></div>
-        <div class="leo-ask-go">›</div>
+        <ul class="log" id="log"></ul>
+        <p class="note">Tap a sleep to fix its time.</p>
       </section>
     </section>
 
-    <!-- ============ DAY — the SECOND home screen ============
-         The Leo home answers "what is happening right now". This one answers "how
-         did the day go", and it keeps answering it at 3am — which is the hour the
-         home can't: there the log narrows to "Tonight" and the 24-hour card is
-         hidden, so the day's naps are on screen nowhere. Nothing here is
-         recomputed: sleepDayStats() for the naps, nightState() for which day we
-         are in, wakeState() for the window, nightSleepStats() for the night. -->
-    <section id="tab-day" class="tab hidden">
-      <!-- 1. One quiet line of "now" — enough to anchor the screen in time without
-              cloning the home's 64px hero timer. -->
-      <section id="day-now" class="card day-now">
-        <p id="day-now-eyebrow" class="card-eyebrow">—</p>
-        <p id="day-now-val" class="day-now-val">—</p>
-        <p id="day-now-why" class="wake-why"></p>
+    <!-- ===== GROWTH ===== -->
+    <section class="tab hidden" id="tab-grow">
+      <div class="stats">
+        <div class="stat"><b id="w-now">—</b><span id="w-date">weight</span></div>
+        <div class="stat"><b id="h-now">—</b><span id="h-date">height</span></div>
+      </div>
+      <section class="card chart">
+        <div class="card-head"><h2>Weight</h2><span class="note flat">kg</span></div>
+        <svg id="wchart" viewBox="0 0 340 170" role="img" aria-label="Leo's weight over time"></svg>
+        <p class="note">Dashed lines: the WHO range for boys (3rd, 50th and 97th percentile).</p>
       </section>
-
-      <!-- 2. THE POINT OF THIS SCREEN: every nap of the waking day — start, end,
-              length — plus the awake stretch between each one, at any hour. -->
-      <section class="card">
-        <div class="card-head"><h2 id="day-naps-title">Naps today</h2><span id="day-naps-total" class="since">—</span></div>
-        <ul id="day-list" class="day-list"></ul>
-        <p id="day-target" class="wake-why"></p>
-      </section>
-
-      <!-- 3. The night that brackets this day: tonight while it's running, and the
-              one that ENDED this morning once the day is under way. -->
-      <section id="day-night-card" class="card hidden">
-        <div class="card-head"><h2 id="day-night-title">Tonight</h2><span id="day-night-total" class="since">—</span></div>
-        <p id="day-night-line" class="day-night-line">—</p>
-        <p id="day-night-why" class="wake-why"></p>
-      </section>
-    </section>
-
-    <!-- ============ HOME TAB (kept — reachable via ⋯ More) ============ -->
-    <section id="tab-home" class="tab hidden">
-      <!-- The duplicate wake card that used to sit here is gone. It was a second
-           copy of the wake-window math and it drifted out of sync with the Leo tab.
-           The sticky #topbanner above shows the same timer on every tab. -->
-
-      <!-- Live feed / sleep banner -->
-      <section id="live-banner" class="live-banner hidden" aria-live="polite"></section>
-
-      <!-- Today's AI insight -->
-      <section class="card insight-card">
-        <div class="card-head">
-          <h2>✨ Today's insight</h2>
-          <div class="insight-head-right">
-            <span id="clock-now" class="clock-now">—</span>
-            <button id="insight-refresh" class="link-btn">↻</button>
-          </div>
-        </div>
-        <p id="insight-text" class="insight-text">Tap ↻ for a gentle, personalized tip.</p>
-        <p id="insight-stamp" class="insight-stamp"></p>
-      </section>
-
-      <!-- Feeds -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Feed</h2>
-          <span id="since-feed" class="since">—</span>
-        </div>
-        <p id="next-feed" class="next-feed">—</p>
-        <p id="feed-awake" class="awake-line">Awake —</p>
-        <div class="btn-row">
-          <button id="breast-left" class="btn btn-feed" data-side="left">Breast L</button>
-          <button id="breast-right" class="btn btn-feed" data-side="right">Breast R</button>
-          <button id="bottle-btn" class="btn btn-feed">Bottle</button>
-        </div>
-        <div class="ago-row">
-          <span id="ago-left">—</span>
-          <span id="ago-right">—</span>
-          <span id="ago-bottle">—</span>
-        </div>
-      </section>
-
-      <!-- Sleep -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Sleep</h2>
-          <span id="sleep-status" class="since">Awake</span>
-        </div>
-        <button id="sleep-btn" class="btn btn-sleep btn-block">Start sleep</button>
-        <p id="ago-sleep" class="ago-sleep">—</p>
-      </section>
-
-      <!-- Milestone -->
-      <section class="card">
-        <button id="milestone-btn" class="btn btn-ghost btn-block">✨ Add milestone</button>
-      </section>
-
-      <!-- Today summary -->
-      <section class="tiles">
-        <div class="tile"><span id="t-feeds" class="tile-num">0</span><span class="tile-label">feeds</span></div>
-        <div class="tile"><span id="t-sleep" class="tile-num">0h</span><span class="tile-label">sleep</span></div>
-        <div class="tile"><span id="t-feedtime" class="tile-num">0m</span><span class="tile-label">feed time</span></div>
-      </section>
-
-      <!-- Today's log -->
-      <section class="card">
-        <div class="card-head">
-          <h2>Today</h2>
-          <button id="export-btn" class="link-btn">Export CSV</button>
-        </div>
-        <ul id="log-list" class="log-list"><li class="log-empty">No entries yet today.</li></ul>
-      </section>
-    </section>
-
-    <!-- ============ GROWTH TAB ============ -->
-    <section id="tab-grow" class="tab hidden">
-      <section class="card">
-        <div class="card-head"><h2>Growth</h2></div>
-        <p class="grow-lead">Log his weight &amp; height — the app plots his WHO percentile.</p>
-        <div class="grow-entry">
-          <input id="grow-weight" class="grow-inp" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Weight (kg)" />
-          <input id="grow-height" class="grow-inp" type="number" inputmode="decimal" step="0.1" min="0" placeholder="Height (cm)" />
-          <input id="grow-date" class="grow-inp grow-date" type="date" />
-        </div>
-        <button id="grow-save" class="btn btn-primary btn-block">Save measurement</button>
-        <p id="grow-msg" class="auth-msg"></p>
-        <div id="grow-stats" class="grow-stats"></div>
-      </section>
-
-      <section class="card">
-        <div class="card-head"><h2>Weight-for-age</h2></div>
-        <canvas id="grow-weight-chart" height="200"></canvas>
-      </section>
-
-      <section class="card">
-        <div class="card-head"><h2>Height-for-age</h2></div>
-        <canvas id="grow-height-chart" height="200"></canvas>
-      </section>
-
+      <button class="btn btn-primary btn-add" id="grow-add">＋ Add weight or height</button>
       <section class="card">
         <div class="card-head"><h2>History</h2></div>
-        <ul id="grow-list" class="log-list"><li class="log-empty">No measurements yet.</li></ul>
+        <ul class="log" id="glist"></ul>
       </section>
-      <p class="grow-disc">WHO Child Growth Standards (boys). Percentiles are approximate — confirm with Dr. León Magaña.</p>
     </section>
 
-    <!-- ============ FOOD TAB (starting solids) ============ -->
-    <section id="tab-food" class="tab hidden">
-      <div id="food-content"></div>
+    <!-- ===== FIRSTS ===== -->
+    <section class="tab hidden" id="tab-firsts">
+      <button class="btn btn-primary btn-add" id="first-add">✨ Add a first</button>
+      <section class="card">
+        <div class="card-head"><h2>Firsts &amp; moments</h2><span class="note flat" id="f-count"></span></div>
+        <ul class="firsts" id="flist"></ul>
+        <p class="note">★ = a "first" (these also go on the Leo wallpaper).</p>
+      </section>
     </section>
 
-    <!-- ============ ASK TAB ============ -->
-    <section id="tab-ask" class="tab hidden">
-      <div id="chat-list" class="chat-list">
-        <div class="chat-hint">Ask Claude anything about Leo — sleep, naps, feeding, milestones. Answers use his age, your gentle-parenting approach, and his logged data. 💞</div>
-      </div>
-      <form id="chat-form" class="chat-form">
-        <input id="chat-input" type="text" placeholder="Ask about Leo…" autocomplete="off" />
-        <button id="chat-send" type="submit" class="btn btn-primary">Send</button>
-      </form>
-    </section>
-
-    <!-- ============ PLANNER TAB ============ -->
-    <section id="tab-planner" class="tab hidden">
-      <div class="pl-agebar" id="pl-agebar"></div>
-      <nav class="pl-subtabs" id="pl-subtabs">
-        <button data-v="today" class="on">Today's rhythm</button>
-        <button data-v="event">Plan an event</button>
-        <button data-v="why">Why we do this</button>
-      </nav>
-      <div id="pl-content"></div>
-    </section>
-
-    <!-- ============ SLEEP TAB ============ -->
-    <section id="tab-sleep" class="tab hidden">
-      <div id="sleep-content"></div>
-    </section>
-
-    <!-- ============ SETTINGS TAB (reached from ⋯ More, or the provenance line) ==== -->
-    <section id="tab-settings" class="tab hidden">
-      <div id="settings-content"></div>
-    </section>
-
-    <!-- ============ COACH — full-screen overlay (inside #app-view, so sign-out hides it) ============ -->
-    <div id="coach" class="hidden" role="dialog" aria-modal="true" aria-label="Coach">
-      <div id="coach-body" class="co-wrap"></div>
-      <div id="coach-toast" class="co-toast hidden" role="status" aria-live="polite"></div>
-    </div>
-
-    <!-- ============ CRY LISTENER — full-screen: the listening screen (almost black) and the morning playback ============ -->
-    <div id="cry" class="hidden" role="dialog" aria-modal="true" aria-label="Listening for crying">
-      <div id="cry-body" class="cry-wrap"></div>
-    </div>
-
-    <!-- ============ BOTTOM NAV ============ -->
-    <nav class="bottomnav">
-      <button class="nav-btn active" data-tab="leo"><span>🏠</span>Leo</button>
-      <button class="nav-btn" data-tab="day"><span>🕑</span>Day</button>
-      <button class="nav-btn" data-tab="grow"><span>📈</span>Growth</button>
-      <button class="nav-btn" data-tab="sleep"><span>🌙</span>Training</button>
-      <button class="nav-btn" data-tab="food"><span>🍽️</span>Food</button>
-      <button class="nav-btn" data-tab="ask"><span>💬</span>Ask</button>
+    <nav class="nav">
+      <button class="on" data-tab="tab-sleep"><span>🌙</span>Sleep</button>
+      <button data-tab="tab-grow"><span>📈</span>Growth</button>
+      <button data-tab="tab-firsts"><span>✨</span>Firsts</button>
     </nav>
   </main>
 
-  <!-- ============ MODALS ============ -->
-  <div id="modal-backdrop" class="modal-backdrop hidden">
-    <!-- Bottle ml -->
-    <div id="bottle-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bottle-title">
-      <h3 id="bottle-title">Bottle amount</h3>
-      <label for="bottle-ml">Milliliters (ml)</label>
-      <input id="bottle-ml" type="number" inputmode="numeric" min="0" step="5" placeholder="e.g. 120" />
-      <div class="modal-actions">
-        <button class="btn btn-ghost" data-close>Cancel</button>
-        <button id="bottle-save" class="btn btn-primary">Save</button>
-      </div>
+  <!-- ============ SHEETS ============ -->
+  <div class="backdrop" id="bd-sleep"><div class="sheet">
+    <h3>Fix this sleep</h3>
+    <div class="seg" id="s-kind">
+      <button type="button" data-kind="nap">😴 Nap</button>
+      <button type="button" data-kind="night">🌙 Night</button>
     </div>
-    <!-- Milestone -->
-    <div id="milestone-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ms-title">
-      <h3 id="ms-title">New milestone</h3>
-      <label for="ms-note">What happened?</label>
-      <input id="ms-note" type="text" placeholder="First smile 🥹" />
-      <label for="ms-photo" class="file-label">Photo (optional)</label>
-      <input id="ms-photo" type="file" accept="image/*" />
-      <div class="modal-actions">
-        <button class="btn btn-ghost" data-close>Cancel</button>
-        <button id="ms-save" class="btn btn-primary">Save</button>
-      </div>
-      <p id="ms-msg" class="auth-msg"></p>
-    </div>
-    <!-- Edit an existing entry (fix a forgotten stop, wrong ml, etc.) -->
-    <div id="edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="edit-title">
-      <h3 id="edit-title">Edit entry</h3>
-      <div id="edit-row-start" class="edit-field">
-        <label for="edit-start">Start</label>
-        <input id="edit-start" type="datetime-local" />
-      </div>
-      <div id="edit-row-end" class="edit-field">
-        <label for="edit-end">End <span class="edit-hint">(leave blank if still running)</span></label>
-        <input id="edit-end" type="datetime-local" />
-      </div>
-      <!-- Nap vs night used to be guessed from the clock and could never be fixed.
-           A 6:45pm bedtime got filed as a nap and broke the nap count all evening. -->
-      <div id="edit-row-subtype" class="edit-field">
-        <label>This sleep was</label>
-        <div class="seg" id="edit-subtype">
-          <button type="button" class="seg-btn" data-subtype="nap">😴 Nap</button>
-          <button type="button" class="seg-btn" data-subtype="night">🌙 Night sleep</button>
-        </div>
-      </div>
-      <div id="edit-row-ml" class="edit-field">
-        <label for="edit-ml">Milliliters (ml)</label>
-        <input id="edit-ml" type="number" inputmode="numeric" min="0" step="5" />
-      </div>
-      <div id="edit-row-note" class="edit-field">
-        <label for="edit-note">Note</label>
-        <input id="edit-note" type="text" />
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" data-close>Cancel</button>
-        <button id="edit-save" class="btn btn-primary">Save</button>
-      </div>
-      <p id="edit-msg" class="auth-msg"></p>
-    </div>
-  </div>
+    <label for="s-start">Fell asleep</label><input id="s-start" type="datetime-local">
+    <label for="s-end">Woke up <span class="hint">(empty = still asleep)</span></label><input id="s-end" type="datetime-local">
+    <div class="row"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="s-save">Save</button></div>
+    <button class="link-btn danger" id="s-del">Delete this sleep</button>
+  </div></div>
 
-  <!-- Supabase + Chart.js, loaded from CDNs (no install) -->
+  <div class="backdrop" id="bd-grow"><div class="sheet">
+    <h3>Add a measurement</h3>
+    <label for="g-w">Weight (kg)</label><input id="g-w" type="number" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 9.1">
+    <label for="g-h">Height (cm)</label><input id="g-h" type="number" inputmode="decimal" step="0.1" min="0" placeholder="e.g. 74">
+    <label for="g-d">Date</label><input id="g-d" type="date">
+    <div class="row"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="g-save">Save</button></div>
+  </div></div>
+
+  <div class="backdrop" id="bd-first"><div class="sheet">
+    <h3>Add a first</h3>
+    <label for="f-t">What happened?</label><input id="f-t" type="text" placeholder="e.g. First steps">
+    <label for="f-d">Date</label><input id="f-d" type="date">
+    <div class="row"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="f-save">Save</button></div>
+  </div></div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Supabase, loaded from a CDN (no install) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <script src="config.js"></script>
   <script src="app.js" defer></script>
 </body>

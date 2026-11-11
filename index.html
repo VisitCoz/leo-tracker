@@ -49,30 +49,54 @@
       <button id="signout-btn" class="icon-btn" title="Sign out" aria-label="Sign out">⏻</button>
     </header>
 
-    <!-- ===== SLEEP ===== -->
+    <!-- ===== SLEEP: the Bitácora (the sleep coach's day sheet) ===== -->
     <section class="tab" id="tab-sleep">
       <section class="card hero zone-awake" id="hero">
         <p class="eyebrow" id="hero-eye">Awake for</p>
         <p class="hero-time" id="hero-time">—</p>
         <p class="hero-sub" id="hero-sub"></p>
         <div class="pair">
-          <div><b id="pair-a">—</b><span id="pair-a-lab">slept last night</span></div>
-          <div><b id="pair-b">—</b><span id="pair-b-lab">naps today</span></div>
+          <div><b id="pair-a">—</b><span>last night, asleep → morning</span></div>
+          <div><b id="pair-b">—</b><span>napping today</span></div>
         </div>
-        <button class="btn btn-sleep" id="sleep-btn">😴 He's asleep</button>
       </section>
 
       <section class="card">
-        <div class="card-head">
-          <h2>Sleep log</h2>
-          <div class="daytabs">
-            <button class="on" data-day="0">Today</button>
-            <button data-day="1">Yesterday</button>
-          </div>
+        <div class="daybar">
+          <button class="icon-btn" id="day-prev" aria-label="Previous day">‹</button>
+          <div><b id="day-title"></b><span id="day-sub"></span></div>
+          <button class="icon-btn" id="day-next" aria-label="Next day">›</button>
         </div>
-        <ul class="log" id="log"></ul>
-        <p class="note">Tap a sleep to fix its time.</p>
+        <div class="daytabs" id="bview">
+          <button class="on" data-view="log">Log</button>
+          <button data-view="form">Form for Isa</button>
+        </div>
       </section>
+
+      <div id="bita-log">
+        <section class="card">
+          <p class="eyebrow" id="next-lbl">Next step</p>
+          <button class="btn big" id="big"></button>
+          <button class="btn btn-ghost hidden" id="night-over">Night over, morning</button>
+          <div class="row2">
+            <button class="btn btn-ghost" id="skip">Skip this step</button>
+            <button class="btn btn-ghost" id="feed">+ Night feed now</button>
+          </div>
+          <div class="undo hidden" id="undo-bar"><span id="undo-msg"></span><button class="link-btn" id="undo">Undo</button></div>
+        </section>
+        <div id="groups"></div>
+        <section class="card">
+          <div class="card-head"><h2>Notes for Isa</h2></div>
+          <textarea id="notes" rows="3" placeholder="e.g. 1:10 woke, rocked him 15 min"></textarea>
+          <p class="note">What you did at each wake-up, anything odd. Goes on the form under the table.</p>
+        </section>
+        <p class="note">Tap any line to stamp the time now. Tap a filled line to fix or clear it. Times after midnight stay on the evening's sheet until you tap “Night over, morning”.</p>
+      </div>
+
+      <div id="bita-form" class="hidden">
+        <div class="paper" id="paper" lang="es"></div>
+        <p class="note">Take a screenshot of this sheet to send it.</p>
+      </div>
     </section>
 
     <!-- ===== GROWTH ===== -->
@@ -111,18 +135,6 @@
   </main>
 
   <!-- ============ SHEETS ============ -->
-  <div class="backdrop" id="bd-sleep"><div class="sheet">
-    <h3>Fix this sleep</h3>
-    <div class="seg" id="s-kind">
-      <button type="button" data-kind="nap">😴 Nap</button>
-      <button type="button" data-kind="night">🌙 Night</button>
-    </div>
-    <label for="s-start">Fell asleep</label><input id="s-start" type="datetime-local">
-    <label for="s-end">Woke up <span class="hint">(empty = still asleep)</span></label><input id="s-end" type="datetime-local">
-    <div class="row"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="s-save">Save</button></div>
-    <button class="link-btn danger" id="s-del">Delete this sleep</button>
-  </div></div>
-
   <div class="backdrop" id="bd-grow"><div class="sheet">
     <h3>Add a measurement</h3>
     <label for="g-w">Weight (kg)</label><input id="g-w" type="number" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 9.1">

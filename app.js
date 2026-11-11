@@ -355,6 +355,8 @@ function openDay(step) {
   $("undo-bar").classList.add("hidden");
   renderSleep();
 }
+// Back on screen after hours in the background: return to the sheet the clock says.
+document.addEventListener("visibilitychange", () => { if (!document.hidden && started) { pickedDay = null; loadBita(); } });
 $("day-prev").addEventListener("click", () => openDay(-1));
 $("day-next").addEventListener("click", () => openDay(1));
 

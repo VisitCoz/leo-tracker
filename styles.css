@@ -109,6 +109,7 @@ input:focus { outline: 2px solid var(--pink); border-color: transparent; }
 .paper .ph span { border-bottom: 2px solid var(--paper-ink); padding: 0 8px; }
 .paper table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; }
 .paper td, .paper th { border: 1.5px solid var(--paper-line); padding: 4px 1px; text-align: center; height: 26px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; hyphens: auto; }
+.paper tr:first-child td:first-child { width: 20%; } /* fixed layout: the first row sets the label column */
 .paper th { background: var(--paper-head); border-color: var(--paper-head); font-weight: 700; }
 .paper td.v { background: var(--paper-cell); font-weight: 700; font-size: 12px; overflow-wrap: normal; }
 .paper td.ic { background: var(--paper-icon); }

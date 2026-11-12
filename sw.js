@@ -5,7 +5,7 @@
 //  the network (live data must be fresh), so they are never cached.
 // ============================================================
 
-const CACHE = "leo-v20";
+const CACHE = "leo-v21";
 const SHELL = [
   "./",
   "index.html",

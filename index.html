@@ -55,6 +55,7 @@
         <p class="eyebrow" id="hero-eye">Awake for</p>
         <p class="hero-time" id="hero-time">—</p>
         <p class="hero-sub" id="hero-sub"></p>
+        <p class="hero-sub2 hidden" id="hero-sub2"></p>
         <div class="pair">
           <div><b id="pair-a">—</b><span>last night, asleep → morning</span></div>
           <div><b id="pair-b">—</b><span>napping today</span></div>
@@ -77,12 +78,12 @@
         <section class="card">
           <p class="eyebrow" id="next-lbl">Next step</p>
           <button class="btn big" id="big"></button>
+          <div id="plan"></div>
           <button class="btn btn-ghost hidden" id="night-over">Night over, morning</button>
           <div class="row2">
             <button class="btn btn-ghost" id="skip">Skip this step</button>
             <button class="btn btn-ghost" id="feed">+ Night feed now</button>
           </div>
-          <div class="undo hidden" id="undo-bar"><span id="undo-msg"></span><button class="link-btn" id="undo">Undo</button></div>
         </section>
         <div id="groups"></div>
         <section class="card">
@@ -132,6 +133,13 @@
       <button data-tab="tab-grow"><span>📈</span>Growth</button>
       <button data-tab="tab-firsts"><span>✨</span>Firsts</button>
     </nav>
+
+    <!-- after a stamp: Undo, or move it earlier if the tap was late -->
+    <div class="latebar hidden" id="undo-bar">
+      <div class="r1"><span id="undo-msg"></span><button class="link-btn" id="undo">Undo</button></div>
+      <div class="r2" id="late"><button data-min="5">5 min ago</button><button data-min="10">10</button><button data-min="15">15</button><button data-min="other" id="late-other">other</button></div>
+      <div class="bar" id="undo-line"></div>
+    </div>
   </main>
 
   <!-- ============ SHEETS ============ -->
@@ -148,6 +156,12 @@
     <label for="f-t">What happened?</label><input id="f-t" type="text" placeholder="e.g. First steps">
     <label for="f-d">Date</label><input id="f-d" type="date">
     <div class="row"><button class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary" id="f-save">Save</button></div>
+  </div></div>
+
+  <div class="backdrop" id="bd-short"><div class="sheet">
+    <h3 id="short-h"></h3>
+    <p id="short-p"></p>
+    <div class="row"><button class="btn btn-primary" id="short-resettle">Resettling</button><button class="btn btn-ghost" id="short-over">Nap over</button></div>
   </div></div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

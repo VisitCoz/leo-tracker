@@ -7,6 +7,10 @@
 //    events  type 'bitacora'   subtype = a line of the sleep coach's sheet (see GROUPS), start_at = when,
 //                              note = {"day":"YYYY-MM-DD"} (the sheet it is on). 'nfeed' = a night feed
 //                              (any number per sheet); 'notes' = {"day","text"}, start_at = noon that day.
+//                              One "Woke up" tap writes s{n}_woke, s{n}_end and s{n}_out with the same time;
+//                              a resettled nap is s{n}_woke, then s{n}_back (back asleep), then s{n}_end + s{n}_out.
+//    events  type 'coach_plan' one row (the latest by start_at), note = JSON: the coach's numbers and
+//                              words, which stay out of this public code (see COACH PLAN)
 //    events  type 'sleep'      the old sleep log: kept in the database, no longer shown
 //    events  type 'milestone'  note = what happened, start_at = when
 //    growth  kind 'weight' (kg) | 'height' (cm), value, measured_at (a date)
@@ -21,6 +25,7 @@ let bitaRows = []; // bitacora rows from 3 days ago onward
 let bita = {};     // the same rows grouped by sheet day (see byDay)
 let pickedDay = null; // a sheet chosen with ‹ ›; null = the sheet the clock says
 let skipTo = null, editKey = null, lastAct = null, heroSince = null;
+let coach = null;  // the coach_plan row's JSON; null = the plan features stay hidden
 let firsts = [];   // milestone rows, newest first
 let growth = [];   // weight/height rows, newest first
 let started = false;
@@ -96,7 +101,7 @@ sb.auth.onAuthStateChange((_event, session) => {
 async function start() {
   started = true;
   $("age-line").textContent = ageLine();
-  await Promise.all([loadBita(), loadFirsts(), loadGrowth()]);
+  await Promise.all([loadCoach(), loadBita(), loadFirsts(), loadGrowth()]);
   // Both phones stay in step: any change by the other parent reloads the data.
   // Subscribed once per page load, even after signing out and back in.
   if (live) return;
@@ -121,11 +126,11 @@ const NAP = (n) => [
 ];
 const GROUPS = [
   { t: "Morning", steps: [{ k: "wake", en: "Woke up", es: "Despierta" }, { k: "feed1", en: "Milk", es: "Toma" }, { k: "bfast", en: "Breakfast", es: "Desayuno" }] },
-  { t: "Nap 1", steps: NAP(1) },
+  { t: "Nap 1", n: 1, steps: NAP(1) },
   { t: "Midday", steps: [{ k: "feed2", en: "Milk", es: "Toma" }, { k: "lunch", en: "Lunch", es: "Lunch" }] },
-  { t: "Nap 2", steps: NAP(2) },
+  { t: "Nap 2", n: 2, steps: NAP(2) },
   { t: "Afternoon", steps: [{ k: "feed3", en: "Milk", es: "Toma" }, { k: "comida", en: "Meal", es: "Comida" }] },
-  { t: "Nap 3 (only if Isa says so)", steps: NAP(3) },
+  { t: "Nap 3 (only if Isa says so)", n: 3, steps: NAP(3) },
   { t: "Evening", steps: [{ k: "routine", en: "Bedtime routine started", es: "Rutina de noche" }] },
   { t: "Night", steps: [
     { k: "n_crib", en: "In crib", es: "Metí a la cuna" }, { k: "n_asleep", en: "Fell asleep", es: "Se durmió" },
@@ -133,12 +138,119 @@ const GROUPS = [
     { k: "n_w3", en: "Night wake-up 3", es: "Despertar 3" }, { k: "n_w4", en: "Night wake-up 4", es: "Despertar 4" },
     { k: "n_w5", en: "Night wake-up 5", es: "Despertar 4" }, { k: "n_end", en: "Night over, morning", es: "Fin de la noche" }] },
 ];
+const BACK = (n) => ({ k: `s${n}_back`, en: "Back asleep", es: "Se volvió a dormir" }); // not on her form
 const STEPS = GROUPS.flatMap((g) => g.steps.map((s) => ({ ...s, g: g.t })));
-const STEP = Object.fromEntries(STEPS.map((s) => [s.k, s]));
+const STEP = Object.fromEntries([...STEPS, BACK(1), BACK(2), BACK(3)].map((s) => [s.k, s]));
 
 const json = (s) => { try { return JSON.parse(s || "{}") || {}; } catch (e) { return {}; } };
 // "2:10 am", the way the coach's paper form writes times
 const h12 = (d) => `${d.getHours() % 12 || 12}:${pad(d.getMinutes())} ${d.getHours() < 12 ? "am" : "pm"}`;
+
+// The lines the log shows for a nap: 3, as one "Woke up" tap stamps Despertar, Fin de siesta and
+// Salió de la cuna together (also = the rows a line writes with its own k). After "Resettling"
+// it is 5: woke, back asleep, woke up. An older sheet, tapped line by line, keeps its 5 lines.
+function napLines(n, o) {
+  const k = (x) => `s${n}_${x}`, m = (x) => o[k(x)] && Math.floor(new Date(o[k(x)].start_at) / 60000);
+  const woke = m("woke"), end = m("end"), out = m("out");
+  const head = [STEP[k("crib")], STEP[k("asleep")]];
+  if (!o[k("back")] && (end || out) && !(woke && (!end || end === woke) && (!out || out === woke))) return NAP(n);
+  if (o[k("back")] || (woke && !end && !out)) return [...head, { k: k("woke"), en: "Woke, resettling", es: "Despertar" }, BACK(n),
+    { k: k("end"), also: [k("out")], en: "Woke up · out of crib", es: "Fin de siesta · Salió de la cuna", short: "Woke up" }];
+  return [...head, { k: k("woke"), also: [k("end"), k("out")], en: "Woke up · out of crib", es: "Despertar · Salió de la cuna", short: "Woke up" }];
+}
+const lines = (o) => GROUPS.flatMap((g) => (g.n ? napLines(g.n, o) : g.steps).map((s) => ({ ...s, g: g.t })));
+const lineOf = (o, k) => lines(o).find((s) => s.k === k) || { ...STEP[k], g: "" };
+
+// One nap in minutes since the sheet's midnight. Length = asleep → woke, plus back → end after a resettle.
+const minOf = (day, at) => Math.floor((new Date(at) - fromIsoDay(day)) / 60000);
+function napOf(o, n, day) {
+  const g = (x) => (o[`s${n}_${x}`] ? minOf(day, o[`s${n}_${x}`].start_at) : null);
+  const crib = g("crib"), asleep = g("asleep"), woke = g("woke"), back = g("back"), end = g("end") ?? g("out");
+  const started = crib != null || asleep != null, done = end != null;
+  const total = asleep != null && woke != null && done ? woke - asleep + (back != null ? end - back : 0) : null;
+  return { n, crib, asleep, woke, back, end, started, done, open: started && !done, total };
+}
+// "40 min", "1 h 24"; and minutes since midnight as "9:26 AM" or "9:26"
+const dl = (d) => { d = Math.round(d); if (d < 60) return `${d} min`; const h = Math.floor(d / 60), r = d % 60; return r ? `${h} h ${pad(r)}` : `${h} h`; };
+const fmt = (m) => { const h = Math.floor(m / 60) % 24; return `${h % 12 || 12}:${pad(m % 60)} ${h < 12 ? "AM" : "PM"}`; };
+const fmtS = (m) => fmt(m).slice(0, -3);
+
+// ============================================================
+//  COACH PLAN: the next sleep time, under the big button. The coach's times, lengths and words
+//  are not in this public code: they come from one events row (type 'coach_plan', the latest by
+//  start_at), note = JSON. This is only the engine: the day type from a wake-up threshold, clock
+//  lookups, shifts, floors, caps and {placeholder} text. No row, or one it can't read = the plan
+//  line, the complete/wake line, the nap tags and the short-nap question stay hidden.
+// ============================================================
+async function loadCoach() {
+  const { data, error } = await sb.from("events").select("note").eq("type", "coach_plan").order("start_at", { ascending: false }).limit(1);
+  if (error) console.error(error);
+  const c = json(data && data[0] && data[0].note);
+  coach = c.days && c.days.early && c.days.normal && c.floor && c.min && c.text ? c : null;
+  renderSleep();
+}
+const safe = (f) => { try { return f(); } catch (e) { console.error(e); return null; } };
+const hm = (s) => { const [h, m] = String(s).split(":").map(Number); return h * 60 + m; };
+const fill = (tpl, v) => String(tpl || "").replace(/\{(\w+)\}/g, (_, k) => (k in v ? v[k] : ""));
+const full = (y) => y.total != null && y.total >= coach.min.complete;
+
+// → { main, why, flag } for a sheet at a moment, or null (the night has started).
+function plan(o, day, nowAt) {
+  if (o.n_crib) return null;
+  const c = coach, x = c.text, m = c.min, now = minOf(day, nowAt);
+  if (!o.wake) return { main: x.no_wake, why: x.no_wake_why };
+  const early = minOf(day, o.wake.start_at) <= hm(c.early_by), t = c.days[early ? "early" : "normal"];
+  const n1 = napOf(o, 1, day), n2 = napOf(o, 2, day), flags = [];
+  const late = (n, start, at) => { if (start - at >= m.late_flag) flags.push(fill(x.late, { n, d: dl(start - at), planned: fmtS(at) })); };
+  const out = (p) => { if (flags.length) p.flag = [p.flag, ...flags].filter(Boolean).join(" "); return p; };
+  const open = (n, y) => {
+    if (y.asleep == null) {
+      if (now < y.crib + m.fall_asleep) return { main: fill(x.fall, { until: fmt(y.crib + m.fall_asleep) }), why: x.fall_why };
+      if (n === 1) return { main: fill(x.retry, { at: fmt(y.crib + m.retry_after) }), why: x.retry_why };
+      return { main: fill(x.bed, { at: fmt(hm(t.bed)) }), why: x.fixed_why, flag: x.last_missed_flag };
+    }
+    if (y.woke != null && y.back == null) return now <= y.woke + m.resettle
+      ? { main: fill(x.resettle, { until: fmt(y.woke + m.resettle) }), why: x.resettle_why }
+      : { main: fill(x.resettle_over, { at: fmt(y.woke + m.resettle) }), why: x.resettle_over_why };
+    if (y.back != null) return { main: fill(x.wake_by, { at: fmt(y.back + m.max - (y.woke - y.asleep)) }), why: x.wake_by_back_why };
+    return { main: fill(x.wake_by, { at: fmt(y.asleep + m.max) }), why: fill(x.wake_by_why, { complete: fmt(y.asleep + m.complete) }) };
+  };
+
+  if (n1.crib != null) late(1, n1.crib, hm(t.n1));
+  if (!n1.started) return { main: fill(x.nap, { n: 1, at: fmt(hm(t.n1)) }), why: early ? x.n1_early : x.n1_normal };
+  if (n1.open) return out(open(1, n1));
+  // nap 1 is over: where nap 2 goes
+  let n2t = hm(t.n2), why = x.nothing_moves;
+  if (n1.asleep == null) { n2t = hm(c.missed_n2); why = x.after_missed; }
+  else if (!full(n1)) { n2t -= m.short_shift; why = x.short; if (n2t < hm(c.floor.n2)) { n2t = hm(c.floor.n2); why = x.n2_floor; } }
+  if (n2.crib != null) late(2, n2.crib, n2t);
+  if (!n2.started) return out({ main: fill(x.nap, { n: 2, at: fmt(n2t) }), why });
+  if (n2.open) return out(open(2, n2));
+  // nap 2 is over: bed
+  let bed = hm(t.bed), whyB = early ? x.bed_early : x.nothing_moves;
+  if (!full(n2)) { bed -= m.short_shift; whyB = x.short; if (bed < hm(c.floor.bed)) { bed = hm(c.floor.bed); whyB = x.bed_floor; } }
+  return out({ main: fill(x.bed, { at: fmt(bed) }), why: whyB });
+}
+
+// The hero's second line while a nap is open.
+function heroPlan(y) {
+  const x = coach.text, m = coach.min;
+  if (y.back != null) return fill(x.hero_back, { wake: fmtS(y.back + m.max - (y.woke - y.asleep)) });
+  if (y.woke != null) return fill(x.hero_resettle, { until: fmtS(y.woke + m.resettle) });
+  return y.asleep != null ? fill(x.hero_asleep, { complete: fmtS(y.asleep + m.complete), wake: fmtS(y.asleep + m.max) }) : "";
+}
+
+// A nap group's header, once the nap is over: "· 1 h 24 · complete".
+function napTag(o, n, day) {
+  const y = napOf(o, n, day);
+  if (y.done && y.asleep == null) return ` <span class="res short">· never fell asleep</span>`;
+  if (y.done && y.total != null) {
+    const ok = coach && safe(() => full(y)), tag = coach && coach.text[ok ? "complete_tag" : "short_tag"];
+    const parts = y.back != null ? ` (${dl(y.woke - y.asleep)} + ${dl(y.end - y.back)})` : "";
+    return ` <span class="res${tag ? (ok ? " ok" : " short") : ""}">· ${dl(y.total)}${tag ? ` · ${esc(tag)}` : ""}${parts}</span>`;
+  }
+  return y.open && y.woke != null && y.back == null ? ` <span class="res short">· resettling</span>` : "";
+}
 
 // Rows → { "2026-11-11": { wake: row, n_w1: row, …, notes: row, feeds: [rows, oldest first] } }
 function byDay(rows) {
@@ -165,12 +277,15 @@ function autoDay(now, days) {
 
 // The next line to stamp: the first empty one after the last filled one.
 // An empty sheet starts at "Woke up", or at the bedtime routine from 4 PM today.
+// From 4 PM today, once nap 2 is over, the routine is next. Nap 3 is never proposed (tap it by hand).
 function nextKey(o, skip, now, isToday) {
   if (skip && !o[skip]) return skip;
+  const steps = lines(o);
   let last = -1;
-  STEPS.forEach((s, i) => { if (o[s.k]) last = i; });
+  steps.forEach((s, i) => { if (o[s.k]) last = i; });
   if (last < 0) return now.getHours() >= 16 && isToday ? "routine" : "wake";
-  const s = STEPS.slice(last + 1).find((x) => !o[x.k]);
+  if (now.getHours() >= 16 && isToday && napOf(o, 2, isoDay(now)).done && !o.routine && !o.n_crib) return "routine";
+  const s = steps.slice(last + 1).find((x) => !o[x.k] && !x.k.startsWith("s3_"));
   return s ? s.k : null;
 }
 
@@ -198,27 +313,41 @@ async function loadBita() {
 function renderHero() {
   const stamps = bitaRows.filter((r) => STEP[r.subtype]).sort((a, b) => new Date(b.start_at) - new Date(a.start_at));
   const top = stamps[0];
-  const woke = stamps.find((r) => r.subtype === "wake" || r.subtype === "n_end" || /^s\d_woke$/.test(r.subtype));
-  let eye = "Awake for", sub, asleep = false;
+  // The nap a row belongs to, measured on its own sheet.
+  const napAt = (r) => { const m = r && /^s(\d)_/.exec(r.subtype), day = r && json(r.note).day; return m && bita[day] ? napOf(bita[day], +m[1], day) : null; };
+  // He woke for good: the morning, the night's end, or a nap's wake-up (its end, after a resettle).
+  const woke = stamps.find((r) => r.subtype === "wake" || r.subtype === "n_end" ||
+    (/^s\d_(woke|end)$/.test(r.subtype) && napAt(r) && (napAt(r).back != null) === r.subtype.endsWith("_end")));
+  const nap = napAt(top);
+  let eye = "Awake for", sub, sub2 = "", asleep = false;
   heroSince = null;
   if (!top) { eye = "Sleep"; sub = "No times yet today"; }
-  else if (top.subtype.endsWith("_asleep")) {
+  else if (/_(asleep|back)$/.test(top.subtype)) {
     heroSince = new Date(top.start_at); asleep = true;
-    eye = "Asleep for"; sub = `Fell asleep at ${clock(heroSince)}`;
+    eye = "Asleep for"; sub = `${top.subtype.endsWith("_back") ? "Back asleep" : "Fell asleep"} at ${clock(heroSince)}`;
   } else if (top.subtype.startsWith("n_w")) {
     heroSince = new Date(top.start_at); asleep = true;
     eye = `Woke at ${clock(heroSince)}`; sub = STEP[top.subtype].en;
-  } else if (woke) { heroSince = new Date(woke.start_at); sub = `Woke up at ${clock(heroSince)}`; }
-  else { eye = "Awake"; sub = `${STEP[top.subtype].en} at ${clock(new Date(top.start_at))}`; }
+  } else if (nap && nap.open && nap.woke != null && top.subtype.endsWith("_woke")) {
+    heroSince = new Date(top.start_at); eye = "Resettling"; sub = `Woke at ${clock(heroSince)}`;
+  } else if (woke) {
+    heroSince = new Date(woke.start_at); sub = `Woke up at ${clock(heroSince)}`;
+    const y = napAt(woke);
+    if (y && y.done && y.total != null) sub2 = `Last nap: ${dl(y.total)}`;
+  } else { eye = "Awake"; sub = `${STEP[top.subtype].en} at ${clock(new Date(top.start_at))}`; }
+  if (coach && nap && nap.open && /_(asleep|back|woke)$/.test(top.subtype)) sub2 = safe(() => heroPlan(nap)) || "";
   $("hero").className = "card hero " + (asleep ? "zone-asleep" : "zone-awake");
   $("hero-eye").textContent = eye;
   $("hero-sub").textContent = sub;
+  $("hero-sub2").textContent = sub2;
+  $("hero-sub2").classList.toggle("hidden", !sub2);
 
   // Night = fell asleep → night over, on last night's sheet (wake-ups included: the sheet
-  // has no "back asleep" line). Naps = fell asleep → woke, summed over today's sheet.
+  // has no "back asleep" line). Naps = each nap's length (both blocks of a resettled nap), summed over today's sheet.
   const span = (o, a, b) => (o && o[a] && o[b] ? Math.max(0, new Date(o[b].start_at) - new Date(o[a].start_at)) : 0);
   const night = span(bita[isoDay(dayAgo(1))], "n_asleep", "n_end");
-  const naps = [1, 2, 3].reduce((sum, n) => sum + span(bita[isoDay(new Date())], `s${n}_asleep`, `s${n}_woke`), 0);
+  const td = isoDay(new Date()), ot = bita[td];
+  const naps = ot ? [1, 2, 3].reduce((sum, n) => sum + Math.max(0, napOf(ot, n, td).total || 0), 0) * 60000 : 0;
   $("pair-a").textContent = night ? dur(night) : "—";
   $("pair-b").textContent = naps ? dur(naps) : "—";
   tick();
@@ -233,17 +362,22 @@ function renderSleep() {
   $("day-prev").disabled = day <= isoDay(dayAgo(3));
   $("day-next").disabled = day >= today;
 
-  const nk = next();
+  const nk = next(), L = nk && lineOf(o, nk);
   $("next-lbl").textContent = nk ? "Next step" : "Done";
   $("big").disabled = !nk;
-  $("big").innerHTML = nk ? `${esc(STEP[nk].en)}<small>${esc(STEP[nk].g)} · tap to stamp ${clock(now)}</small>`
+  $("big").innerHTML = nk ? `${esc(L.short || L.en)}<small>${esc(L.g)} · tap to stamp ${clock(now)}</small>`
     : `Day complete<small>Open “Form for Isa” to send it</small>`;
+  const p = coach && safe(() => plan(o, day, now));
+  $("plan").innerHTML = p ? `<div class="isa"><div class="isa-h"><b>${esc(coach.label || "")}</b><span class="tag">${esc(coach.tag || "")}</span></div>` +
+    `<p class="isa-main">${esc(p.main)}${p.why ? ` <span>· ${esc(p.why)}</span>` : ""}</p>` +
+    (p.flag ? `<div class="isa-flag">⚠ ${esc(p.flag)}</div>` : "") + `</div>` : "";
   $("night-over").classList.toggle("hidden", !(o.n_asleep && !o.n_end && nk !== "n_end"));
   $("skip").disabled = !nk;
   $("feed").textContent = o.feeds.length ? `+ Night feed (${o.feeds.map((r) => clock(new Date(r.start_at))).join(", ")})` : "+ Night feed now";
 
   const typed = editKey && $("edit-time") ? $("edit-time").value : null; // keep a half-typed time across a live reload
-  $("groups").innerHTML = GROUPS.map((g) => `<section class="card steps"><h2>${esc(g.t)}</h2>` + g.steps.map((s) => {
+  $("groups").innerHTML = GROUPS.map((g) => `<section class="card steps"><h2>${esc(g.t)}${g.n ? napTag(o, g.n, day) : ""}</h2>` +
+    (g.n ? napLines(g.n, o) : g.steps).map((s) => {
     const r = o[s.k];
     let h = `<button class="step${s.k === nk ? " next" : ""}" data-k="${s.k}"><span>${esc(s.en)}<small>${esc(s.es)}</small></span>` +
       `<b class="${r ? "" : "empty"}">${r ? clock(new Date(r.start_at)) : "tap"}</b></button>`;
@@ -269,7 +403,10 @@ function renderPaper(day, o) {
       `<tr>${td("◷", "ic")}${keys.map((k) => td(t(k), "v")).join("")}${fill}</tr>`;
   };
   const nap = (n) => NAP(n).map((s) => s.k);
-  const text = o.notes ? json(o.notes.note).text : "";
+  // A resettled nap gets a line in the notes, written from its times (not stored).
+  const auto = [1, 2, 3].filter((n) => o[`s${n}_woke`] && o[`s${n}_back`])
+    .map((n) => `Siesta ${n}: despertó ${t(`s${n}_woke`)}, se volvió a dormir ${t(`s${n}_back`)}.`);
+  const text = [...auto, o.notes ? json(o.notes.note).text : ""].filter(Boolean).join(" ");
   $("paper").innerHTML =
     `<p class="ph">Bitácora de sueño día <span>${esc(fromIsoDay(day).toLocaleDateString("es-MX", { day: "numeric", month: "short" }))}</span></p>` +
     `<table>${single("wake")}${single("feed1")}${single("bfast")}${block("Siesta 1", nap(1))}${single("feed2")}${single("lunch")}` +
@@ -290,43 +427,101 @@ setInterval(() => { if (started) tick(); }, 1000);
 // Once a minute: the "tap to stamp" time, and the sheet moving to a new day.
 setInterval(() => { if (started && !editKey && document.activeElement !== $("notes")) renderSleep(); }, 60000);
 
-// Every change to a line goes through here. row = the line's row now (null = new);
-// at = null clears the line. The previous state is kept so "Undo" can put it back.
+// Every change to a line goes through here. keys = the rows the line writes together (one tap
+// on "Woke up" = three rows); at = null clears them. The previous state is kept so "Undo" can put
+// it back. stamp = a new stamp: the bar can then move it a few minutes earlier.
 let busy = false;
-async function write(k, at, row, msg) {
+async function write(keys, at, msg, stamp) {
   if (busy) return;
   busy = true;
-  const day = sheetDay();
-  const id = row ? row.id : crypto.randomUUID();
-  const q = !at ? sb.from("events").delete().eq("id", id)
-    : row ? sb.from("events").update({ start_at: at.toISOString() }).eq("id", id)
-    : sb.from("events").insert({ id, type: "bitacora", subtype: k, start_at: at.toISOString(), note: JSON.stringify({ day }) });
-  if (await save(q)) {
-    lastAct = { id, prev: row && { id, type: row.type, subtype: row.subtype, start_at: row.start_at, note: row.note } };
+  const day = sheetDay(), o = cur();
+  const rows = keys.filter((k) => at || o[k]).map((k) => ({ k, row: o[k] || null, id: o[k] ? o[k].id : crypto.randomUUID() }));
+  const q = !at ? sb.from("events").delete().in("id", rows.map((r) => r.id))
+    : sb.from("events").upsert(rows.map(({ k, row, id }) => ({ id, type: "bitacora", subtype: k, start_at: at.toISOString(), note: row ? row.note : JSON.stringify({ day }) })));
+  if (rows.length && await save(q)) {
+    lastAct = { k: keys[0], at, label: msg.split(" · ")[0], rows: rows.map(({ row, id }) => ({ id, prev: row && { id, type: row.type, subtype: row.subtype, start_at: row.start_at, note: row.note } })) };
     skipTo = null; editKey = null;
-    $("undo-msg").textContent = msg;
-    $("undo-bar").classList.remove("hidden");
+    showBar(msg, stamp);
   }
   await loadBita();
   busy = false;
 }
-const stampNow = (k) => write(k, new Date(), cur()[k] || null, `${STEP[k].en} · ${clock(new Date())}`);
+
+// A tap on a line. "Woke up" under the coach's complete length first asks: resettling, or nap over?
+let shortTap = null;
+function stampNow(k) {
+  const o = cur(), day = sheetDay(), L = lineOf(o, k), now = new Date(), m = /^s(\d)_woke$/.exec(k);
+  const y = m && L.also && coach && napOf(o, +m[1], day);
+  if (y && y.asleep != null && minOf(day, now) - y.asleep < coach.min.complete) {
+    shortTap = { n: +m[1], at: now };
+    $("short-h").textContent = `He slept ${dl(minOf(day, now) - y.asleep)}.`;
+    $("short-p").textContent = coach.text.sheet || "";
+    openSheet("bd-short");
+    return;
+  }
+  write([k, ...(L.also || [])], now, `${L.short || L.en} · Stamped ${clock(now)}`, true);
+}
+$("short-resettle").addEventListener("click", () => {
+  if (!shortTap) return;
+  const { n, at } = shortTap;
+  shortTap = null; closeSheets();
+  write([`s${n}_woke`], at, `Woke, resettling · Stamped ${clock(at)}`, true);
+});
+$("short-over").addEventListener("click", () => {
+  if (!shortTap) return;
+  const { n, at } = shortTap;
+  shortTap = null; closeSheets();
+  write([`s${n}_woke`, `s${n}_end`, `s${n}_out`], at, `Woke up · Stamped ${clock(at)}`, true);
+});
+
+// The bar after a change: Undo for about 8 seconds, and after a stamp "5 min ago · 10 · 15 · other"
+// for a tap made late.
+let barTimer;
+function showBar(msg, moves) {
+  $("undo-msg").textContent = msg;
+  $("late").classList.toggle("hidden", !moves);
+  $("late-other").classList.toggle("hidden", lastAct.k === "nfeed");
+  $("undo-bar").classList.remove("hidden");
+  const line = $("undo-line");
+  line.classList.remove("run"); void line.offsetWidth; line.classList.add("run");
+  clearTimeout(barTimer);
+  barTimer = setTimeout(hideBar, 8000);
+}
+function hideBar() { clearTimeout(barTimer); lastAct = null; $("undo-bar").classList.add("hidden"); }
 
 $("big").addEventListener("click", () => { const k = next(); if (k) stampNow(k); });
 $("night-over").addEventListener("click", () => stampNow("n_end"));
-$("feed").addEventListener("click", () => write("nfeed", new Date(), null, `Night feed · ${clock(new Date())}`));
+$("feed").addEventListener("click", () => write(["nfeed"], new Date(), `Night feed · Stamped ${clock(new Date())}`, true));
 $("skip").addEventListener("click", () => {
-  const k = next(), o = cur();
-  const s = k && STEPS.slice(STEPS.findIndex((x) => x.k === k) + 1).find((x) => !o[x.k]);
+  const k = next(), o = cur(), steps = lines(o);
+  const s = k && steps.slice(steps.findIndex((x) => x.k === k) + 1).find((x) => !o[x.k]);
   if (s) { skipTo = s.k; renderSleep(); }
 });
 $("undo").addEventListener("click", async () => {
   if (!lastAct || busy) return;
-  const { id, prev } = lastAct;
-  lastAct = null;
-  $("undo-bar").classList.add("hidden");
-  await save(prev ? sb.from("events").upsert(prev) : sb.from("events").delete().eq("id", id), "Undone");
+  const { rows } = lastAct;
+  hideBar();
+  const prev = rows.filter((r) => r.prev).map((r) => r.prev), added = rows.filter((r) => !r.prev).map((r) => r.id);
+  if ((!prev.length || await save(sb.from("events").upsert(prev))) && (!added.length || await save(sb.from("events").delete().in("id", added)))) toast("Undone");
   await loadBita();
+});
+$("late").addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b || !lastAct || busy) return;
+  const a = lastAct;
+  if (b.dataset.min === "other") {
+    hideBar(); editKey = a.k; renderSleep();
+    const row = document.querySelector(`[data-k="${a.k}"]`);
+    if (row) row.scrollIntoView({ block: "center" });
+    return;
+  }
+  busy = true;
+  const at = new Date(a.at.getTime() - b.dataset.min * 60000);
+  if (await save(sb.from("events").update({ start_at: at.toISOString() }).in("id", a.rows.map((r) => r.id)))) {
+    showBar(`${a.label} · Moved to ${clock(at)} (${b.dataset.min} min earlier)`, true);
+  }
+  await loadBita();
+  busy = false;
 });
 
 // Tap an empty line = stamp it now. Tap a filled line = fix its time or clear it.
@@ -340,10 +535,11 @@ $("groups").addEventListener("click", (e) => {
   } else if (b.dataset.act === "save") {
     const v = $("edit-time").value;
     if (!v) return;
-    const at = atTime(sheetDay(), v, editKey.startsWith("n_"));
-    write(editKey, at, o[editKey], `${STEP[editKey].en} → ${clock(at)}`);
+    const at = atTime(sheetDay(), v, editKey.startsWith("n_")), L = lineOf(o, editKey);
+    write([editKey, ...(L.also || [])], at, `${L.en} → ${clock(at)}`);
   } else if (b.dataset.act === "clear") {
-    write(editKey, null, o[editKey], `Cleared: ${STEP[editKey].en}`);
+    const L = lineOf(o, editKey);
+    write([editKey, ...(L.also || [])], null, `Cleared: ${L.en}`);
   }
 });
 
@@ -351,12 +547,12 @@ function openDay(step) {
   const d = fromIsoDay(sheetDay());
   const nd = isoDay(new Date(d.getFullYear(), d.getMonth(), d.getDate() + step));
   pickedDay = nd === autoDay(new Date(), bita) ? null : nd;
-  skipTo = null; editKey = null; lastAct = null;
-  $("undo-bar").classList.add("hidden");
+  skipTo = null; editKey = null;
+  hideBar();
   renderSleep();
 }
 // Back on screen after hours in the background: return to the sheet the clock says.
-document.addEventListener("visibilitychange", () => { if (!document.hidden && started) { pickedDay = null; loadBita(); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && started) { pickedDay = null; loadBita(); loadCoach(); } });
 $("day-prev").addEventListener("click", () => openDay(-1));
 $("day-next").addEventListener("click", () => openDay(1));
 

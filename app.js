@@ -316,7 +316,10 @@ function renderHero() {
   // The nap a row belongs to, measured on its own sheet.
   const napAt = (r) => { const m = r && /^s(\d)_/.exec(r.subtype), day = r && json(r.note).day; return m && bita[day] ? napOf(bita[day], +m[1], day) : null; };
   // He woke for good: the morning, the night's end, or a nap's wake-up (its end, after a resettle).
-  const woke = stamps.find((r) => r.subtype === "wake" || r.subtype === "n_end" ||
+  // A night's end gives way to the next sheet's "Woke up" once that is stamped: a late tap on "Night over" must not restart the clock.
+  const dayAfter = (day) => { const d = fromIsoDay(day); return isoDay(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)); };
+  const morning = (r) => (bita[dayAfter(json(r.note).day)] || {}).wake;
+  const woke = stamps.find((r) => r.subtype === "wake" || (r.subtype === "n_end" && !morning(r)) ||
     (/^s\d_(woke|end)$/.test(r.subtype) && napAt(r) && (napAt(r).back != null) === r.subtype.endsWith("_end")));
   const nap = napAt(top);
   let eye = "Awake for", sub, sub2 = "", asleep = false;

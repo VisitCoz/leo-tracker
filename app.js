@@ -1,5 +1,5 @@
 // ============================================================
-//  Leo Tracker: the simple app. Three tabs: Sleep, Growth, Firsts.
+//  Leo Tracker: the simple app. Four tabs: Sleep, Checks, Growth, Firsts.
 //  Plain JavaScript, no build step. Loads after config.js and the
 //  Supabase library (see index.html).
 //
@@ -11,6 +11,7 @@
 //                              a resettled nap is s{n}_woke, then s{n}_back (back asleep), then s{n}_end + s{n}_out.
 //    events  type 'coach_plan' one row (the latest by start_at), note = JSON: the coach's numbers and
 //                              words, which stay out of this public code (see COACH PLAN)
+//    events  type 'check'      timed checks at night, one row per session (see CHECKS)
 //    events  type 'sleep'      the old sleep log: kept in the database, no longer shown
 //    events  type 'milestone'  note = what happened, start_at = when
 //    growth  kind 'weight' (kg) | 'height' (cm), value, measured_at (a date)
@@ -101,13 +102,16 @@ sb.auth.onAuthStateChange((_event, session) => {
 async function start() {
   started = true;
   $("age-line").textContent = ageLine();
-  await Promise.all([loadCoach(), loadBita(), loadFirsts(), loadGrowth()]);
+  ck = ckLoad();
+  if (ck && ck.ph !== "done" && Date.now() - ck.started > 12 * 3600000) ckKeep(null); // a clock left running since another night
+  if (ck) ckOpen(); // a timer that was running before a reload or sign-in comes straight back
+  await Promise.all([loadCoach(), loadBita(), loadFirsts(), loadGrowth(), loadChecks()]);
   // Both phones stay in step: any change by the other parent reloads the data.
   // Subscribed once per page load, even after signing out and back in.
   if (live) return;
   live = true;
   sb.channel("leo-live")
-    .on("postgres_changes", { event: "*", schema: "public", table: "events" }, () => { loadBita(); loadFirsts(); })
+    .on("postgres_changes", { event: "*", schema: "public", table: "events" }, () => { loadBita(); loadFirsts(); loadChecks(); })
     .on("postgres_changes", { event: "*", schema: "public", table: "growth" }, loadGrowth)
     .subscribe();
 }
@@ -717,6 +721,225 @@ $("flist").addEventListener("click", async (e) => {
   const b = e.target.closest("button.del");
   if (!b || !confirm("Delete this moment?")) return;
   if (await save(sb.from("events").delete().eq("id", b.dataset.id), "Deleted")) await loadFirsts();
+});
+
+// ============================================================
+//  CHECKS: timed checks at night. The clock decides when to go in, not the crying.
+//  A night runs 6:00 AM → 6:00 AM, so 2 AM still belongs to the evening before.
+//  Data: events type 'check', one row per finished or stopped session:
+//    subtype 'bedtime' | 'wake', start_at = when the clock started,
+//    note = {"night":1,"minutes":38,"visits":4,"stopped":false}
+//    subtype 'morning', start_at = the "Up for the day" tap, no note
+//  The session in progress is kept on this phone (localStorage 'leo-checks') as timestamps,
+//  so a locked screen, another app or a reload comes back with the right time left.
+// ============================================================
+const CHECKS_PLAN = {
+  start: "2026-11-25", // night 1
+  // minutes before visit 1, visit 2, then every visit after; by night (row 1 = night 1). The last row repeats.
+  gaps: [[3, 5, 10], [5, 10, 12], [10, 12, 15], [10, 12, 15], [12, 15, 20]],
+};
+const VISIT = 60000; // one minute in the room
+const CALM = [
+  "He is safe, fed and loved. This is protest, not pain.",
+  "You are going back in. He will see you soon.",
+  "Tonight is the loudest. Night 3 is shorter.",
+  "Going in early teaches him to cry longer. Waiting is the kind thing.",
+  "Everything is okay. He is learning something hard, and you are right outside.",
+];
+
+// Pure (no screen, no database), so they can be tested on their own.
+// The night a moment belongs to: before 6 AM it is still the evening before. Never below 1.
+function nightOf(at) {
+  const [y, m, d] = CHECKS_PLAN.start.split("-").map(Number);
+  const eve = new Date(at.getFullYear(), at.getMonth(), at.getDate() - (at.getHours() < 6 ? 1 : 0));
+  return Math.max(1, Math.round((eve - new Date(y, m - 1, d)) / 86400000) + 1);
+}
+// 6:00 AM on the day night n begins (the strip's date, and where its rows start)
+const nightDay = (n) => { const [y, m, d] = CHECKS_PLAN.start.split("-").map(Number); return new Date(y, m - 1, d + n - 1, 6); };
+const gapsOf = (night) => CHECKS_PLAN.gaps[Math.min(Math.max(night, 1), CHECKS_PLAN.gaps.length) - 1];
+const gapMin = (night, v) => { const g = gapsOf(night); return g[Math.min(v, g.length - 1)]; };
+
+// A session: { id, kind: 'bedtime'|'wake', night, started, v (visits made), ph, at (when this phase began),
+// end, stopped, saved }. ph = 'wait' (counting down to visit v+1) | 'visit' (the minute in the room) |
+// 'quiet' (clock paused) | 'done'. Times are ms since 1970.
+// advance = the session at `now`: a gap that ran out becomes the visit, a visit that ran out the next gap.
+// Back after a long lock: the visit starts when the gap ran out, or now (a full minute) if that minute is
+// already gone, so a visit nobody made is never counted. buzz = a visit began.
+function advance(s, now) {
+  s = { ...s };
+  let buzz = false;
+  for (;;) {
+    if (s.ph === "wait" && now >= s.at + gapMin(s.night, s.v) * 60000) {
+      const end = s.at + gapMin(s.night, s.v) * 60000;
+      s.ph = "visit"; s.at = now - end < VISIT ? end : now; buzz = true;
+    } else if (s.ph === "visit" && now >= s.at + VISIT) {
+      s.v += 1; s.ph = "wait"; s.at += VISIT;
+    } else return { s, buzz };
+  }
+}
+// The phase's length and time left, and the time since the clock started (ms).
+function phaseLeft(s, now) {
+  const len = s.ph === "wait" ? gapMin(s.night, s.v) * 60000 : s.ph === "visit" ? VISIT : 0;
+  return { len, left: Math.max(0, s.at + len - now), total: Math.max(0, (s.end || now) - s.started) };
+}
+const checkRow = (s) => ({ id: s.id, type: "check", subtype: s.kind, start_at: new Date(s.started).toISOString(),
+  note: JSON.stringify({ night: s.night, minutes: Math.round((s.end - s.started) / 60000), visits: s.v, stopped: !!s.stopped }) });
+// The strip: 7 nights (1–7, later the last 7), each with its bedtime session (one he fell asleep in first).
+function weekOf(rows, night) {
+  const first = Math.max(1, night - 6);
+  return Array.from({ length: 7 }, (_, i) => {
+    const n = first + i, mine = rows.filter((r) => r.subtype === "bedtime" && json(r.note).night === n);
+    const r = mine.filter((x) => !json(x.note).stopped).pop() || mine.pop(), o = r ? json(r.note) : null;
+    return { n, minutes: o ? o.minutes : null, visits: o ? o.visits : null };
+  });
+}
+
+// ---------- the tab and the timer screen ----------
+let ck = null;     // the session in progress (also in localStorage), or null
+let ckRows = [];   // check rows of the 7 nights on the strip
+let ckDrawn = "";  // which screen the timer body was built for (the numbers update in place)
+let ckSaving = false, wakeLock = null;
+const ckLoad = () => { try { return JSON.parse(localStorage.getItem("leo-checks")) || null; } catch (e) { return null; } };
+function ckKeep(s) {
+  ck = s;
+  try { if (s) localStorage.setItem("leo-checks", JSON.stringify(s)); else localStorage.removeItem("leo-checks"); } catch (e) { console.error(e); }
+}
+const mmss = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+
+// The screen stays on while the clock runs, where the phone allows it.
+async function keepAwake(on) {
+  try {
+    if (on && !wakeLock && "wakeLock" in navigator && !document.hidden) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } else if (!on && wakeLock) { const w = wakeLock; wakeLock = null; await w.release(); }
+  } catch (e) { wakeLock = null; }
+}
+
+async function loadChecks() {
+  const { data, error } = await sb.from("events").select("*").eq("type", "check")
+    .gte("start_at", nightDay(Math.max(1, nightOf(new Date()) - 6)).toISOString()).order("start_at");
+  if (error) { console.error(error); return; }
+  ckRows = data || [];
+  renderChecks();
+}
+
+function renderChecks() {
+  const n = nightOf(new Date()), g = gapsOf(n);
+  $("ck-night").textContent = `Night ${n}${n <= 7 ? " of 7" : ""}`;
+  $("ck-gaps").innerHTML = [[g[0], "1st visit"], [g[1], "2nd"], [g[2], "then every"]].map(([m, t]) => `<div><b>${m} min</b>${t}</div>`).join("");
+  $("ck-start").innerHTML = ck ? `Timer running<small>tap to open it</small>` : `He's in the crib, awake<small>start the clock when you leave the room</small>`;
+  $("ck-wake").disabled = !!ck;
+  $("ck-week").innerHTML = weekOf(ckRows, n).map((c) => `<div class="${c.n === n ? "t" : ""}"><b>${c.minutes != null ? `${c.minutes}m` : "–"}</b>` +
+    `${c.minutes != null ? `${c.visits} visit${c.visits === 1 ? "" : "s"}` : shortDate(nightDay(c.n))}</div>`).join("");
+}
+
+const RING = 2 * Math.PI * 112;
+const ring = (col) => `<div class="ck-ringwrap"><svg viewBox="0 0 250 250"><circle cx="125" cy="125" r="112" fill="none" stroke="#33263a" stroke-width="14"/>` +
+  `<circle id="ck-arc" cx="125" cy="125" r="112" fill="none" stroke="${col}" stroke-width="14" stroke-linecap="round" stroke-dasharray="${RING}" stroke-dashoffset="0"/></svg>`;
+const ringEnd = (sub) => `<div class="ck-ringtxt"><b id="ck-time"></b><span>${sub}</span></div></div>`;
+
+// The timer body, built once per screen; ckDraw then only changes the numbers.
+function ckBody(s) {
+  const stats = `<div class="ck-stats"><span>Night ${s.night} · visit ${s.v + 1}</span><span id="ck-total"></span></div>`;
+  const asleep = `<button class="btn btn-sage" data-ck="asleep">He's asleep 🌙</button>`;
+  const wrong = `<button class="ck-wrong" data-ck="wrong">Something is wrong</button>`;
+  if (s.ph === "wait") return ring("#8fc0a9") + ringEnd(`until visit ${s.v + 1} · stay out`) + stats +
+    `<div class="ck-calm" id="ck-calm"></div><div class="ck-spacer"></div><div class="ck-acts">` +
+    `<button class="btn btn-ghost" data-ck="quiet">He went quiet</button>${asleep}${wrong}</div>`;
+  if (s.ph === "quiet") return ring("#b9a6b6") + ringEnd("quiet · clock paused") + stats +
+    `<div class="ck-calm">Quiet means he is trying. Stay out and let him.</div><div class="ck-spacer"></div><div class="ck-acts">` +
+    `<button class="btn btn-ghost" data-ck="cry">Crying again · restart the ${gapMin(s.night, s.v)} min</button>${asleep}</div>`;
+  if (s.ph === "visit") return ring("#e0b15a") + ringEnd("go in now · one minute") + stats +
+    `<div class="ck-script"><b>Calm voice, a pat.</b><br>"It's sleep time. I love you."<br><b>No picking up.</b> Lay him down once if he is standing.<br>` +
+    `<b>Leave at zero,</b> even if he is still crying.</div><div class="ck-spacer"></div><div class="ck-acts">` +
+    `<button class="btn btn-primary" data-ck="out">I'm out · start the next ${gapMin(s.night, s.v + 1)} min</button>${wrong}</div>`;
+  const saved = s.saved ? "Saved to tonight. Nothing to type." : "Not saved yet · tap Done to try again.";
+  if (s.stopped) return `<div class="ck-done"><h2>Stopped for tonight</h2><p class="note">${saved}</p></div><div class="ck-spacer"></div>` +
+    `<button class="btn btn-sage" data-ck="ok">Done</button>`;
+  const mins = Math.round((s.end - s.started) / 60000);
+  return `<div class="ck-done"><div class="ck-moon">🌙</div><h2>He did it.</h2><p class="ck-dim">Asleep by himself, night ${s.night}.</p>` +
+    `<div class="ck-tri"><div><b>${mins} min</b>to fall asleep</div><div><b>${s.v}</b>visits</div><div><b>${gapMin(s.night, Math.max(0, s.v - 1))} min</b>longest gap</div></div>` +
+    `<p class="note">${saved}</p></div><div class="ck-spacer"></div><button class="btn btn-sage" data-ck="ok">Done</button>`;
+}
+
+function ckDraw() {
+  const s = ck, now = Date.now(), key = `${s.ph}${s.v}${s.saved ? "s" : ""}`;
+  $("ck-timer").classList.toggle("go", s.ph === "visit");
+  if (key !== ckDrawn) { ckDrawn = key; $("ck-body").innerHTML = ckBody(s); }
+  if (s.ph === "done") return;
+  const t = phaseLeft(s, now), set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  set("ck-time", mmss(s.ph === "quiet" ? now - s.at : t.left));
+  set("ck-total", `${mmss(t.total)} since you left`);
+  set("ck-calm", CALM[Math.floor(t.total / 25000) % CALM.length]);
+  $("ck-arc").setAttribute("stroke-dashoffset", String(RING * (1 - (t.len ? t.left / t.len : 1))));
+}
+
+// Twice a second: move the session on from the clock (never by counting down), buzz at a visit, redraw.
+function ckTick() {
+  if (!started || !ck) return;
+  const { s, buzz } = advance(ck, Date.now());
+  if (s.ph !== ck.ph || s.v !== ck.v || s.at !== ck.at) ckKeep(s);
+  if (buzz && navigator.vibrate) navigator.vibrate([300, 150, 300]);
+  if (!$("ck-timer").classList.contains("hidden")) ckDraw();
+}
+setInterval(ckTick, 500);
+setInterval(() => { if (started) renderChecks(); }, 60000); // the night number moves at 6 AM
+
+function ckOpen() {
+  $("ck-timer").classList.remove("hidden");
+  ckDrawn = "";
+  ckTick();
+  if (ck.ph !== "done") keepAwake(true);
+  renderChecks();
+}
+function ckClose() { ckKeep(null); closeSheets(); $("ck-timer").classList.add("hidden"); keepAwake(false); renderChecks(); }
+function ckBegin(kind) {
+  if (!ck) { const now = Date.now(); ckKeep({ id: crypto.randomUUID(), kind, night: nightOf(new Date(now)), started: now, v: 0, ph: "wait", at: now }); }
+  ckOpen();
+}
+// One row per session, keyed by the session's id: a retry never writes it twice.
+async function ckSave() {
+  if (!ck || ck.saved || ckSaving) return;
+  ckSaving = true;
+  const ok = await save(sb.from("events").upsert(checkRow(ck)), ck.stopped ? "Stopped for tonight · saved" : null);
+  ckSaving = false;
+  if (ok && ck) { ckKeep({ ...ck, saved: true }); loadChecks(); }
+  ckTick();
+}
+async function ckFinish(stopped) {
+  if (!ck || ck.ph === "done") return;
+  ckKeep({ ...advance(ck, Date.now()).s, ph: "done", end: Date.now(), stopped });
+  closeSheets(); keepAwake(false); ckTick();
+  await ckSave();
+  if (stopped && ck && ck.saved) ckClose();
+}
+
+$("ck-start").addEventListener("click", () => ckBegin("bedtime"));
+$("ck-wake").addEventListener("click", () => ckBegin("wake"));
+$("ck-back").addEventListener("click", () => { $("ck-timer").classList.add("hidden"); renderChecks(); }); // the clock keeps running
+$("ck-stop").addEventListener("click", () => ckFinish(true));
+$("ck-morning").addEventListener("click", async () => {
+  const now = new Date();
+  if (await save(sb.from("events").insert({ type: "check", subtype: "morning", start_at: now.toISOString() }), `Up for the day · Stamped ${clock(now)}`)) loadChecks();
+});
+$("ck-body").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-ck]");
+  if (!b || !ck) return;
+  const a = b.dataset.ck, now = Date.now();
+  if (a === "wrong") return openSheet("bd-wrong");
+  if (a === "asleep") return ckFinish(false);
+  if (a === "ok") { if (!ck.saved) await ckSave(); if (ck && ck.saved) ckClose(); return; }
+  if (a === "quiet" && ck.ph === "wait") ckKeep({ ...ck, ph: "quiet", at: now });
+  else if (a === "cry" && ck.ph === "quiet") ckKeep({ ...ck, ph: "wait", at: now }); // the same gap, from the top
+  else if (a === "out" && ck.ph === "visit") ckKeep({ ...ck, v: ck.v + 1, ph: "wait", at: now });
+  ckTick();
+});
+// Back on screen: catch the clock up at once and ask for the screen to stay on again.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !started) return;
+  loadChecks();
+  if (ck) { ckTick(); if (ck.ph !== "done") keepAwake(true); }
 });
 
 // ============================================================

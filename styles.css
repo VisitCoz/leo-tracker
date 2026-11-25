@@ -163,7 +163,47 @@ li.empty { color: var(--ink-dim); font-size: 14px; display: block; }
 .firsts .d a { color: var(--pink); }
 .firsts li.newest .lab { color: var(--amber); }
 
-/* ---------- bottom nav (3 tabs) ---------- */
+/* ---------- checks: timed checks at night ---------- */
+.checks-tonight { background: linear-gradient(160deg, #2a2040, #1f1830); }
+.checks-night { font-size: 26px; margin: 6px 0 2px; }
+.gaps { display: flex; gap: 8px; margin-top: 10px; }
+.gaps div { flex: 1; background: var(--bg-card-2); border-radius: 12px; padding: 8px; text-align: center; font-size: 12px; color: var(--ink-dim); }
+.gaps b { display: block; font: 600 20px "Fraunces", serif; color: var(--ink); }
+.nights { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; margin-top: 10px; }
+.nights div { background: var(--bg-card-2); border-radius: 10px; padding: 7px 2px; text-align: center; font-size: 11px; color: var(--ink-dim); }
+.nights b { display: block; font-size: 14px; color: var(--ink); }
+.nights .t { outline: 2px solid var(--pink); }
+.checks-clock { margin: 6px 0 0; font-size: 15px; }
+.btn-sage { background: var(--sage); color: #0f2318; }
+.ck-timer { position: fixed; inset: 0; z-index: 48; background: var(--bg); display: flex; flex-direction: column; overflow-y: auto;
+  padding: calc(20px + env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom)); }
+.ck-timer.go { background: #3a2a12; }
+.ck-back { align-self: flex-start; background: var(--bg-card); border: none; color: var(--ink-dim); border-radius: 12px; height: 40px; padding: 0 14px; font: 600 14px "Inter", sans-serif; cursor: pointer; }
+.ck-body { display: flex; flex-direction: column; flex: 1; width: 100%; max-width: 480px; margin: 0 auto; }
+.ck-ringwrap { position: relative; width: 250px; max-width: 100%; aspect-ratio: 1; margin: 14px auto 6px; }
+.ck-ringwrap svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
+.ck-ringtxt { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.ck-ringtxt b { font: 600 64px/1 "Fraunces", serif; font-variant-numeric: tabular-nums; }
+.ck-ringtxt span { font-size: 13px; color: var(--ink-dim); margin-top: 6px; max-width: 170px; }
+.ck-stats { display: flex; justify-content: space-between; color: var(--ink-dim); font-size: 13px; margin: 0 4px 10px; }
+.ck-calm { background: var(--bg-card); border-radius: 16px; padding: 14px 16px; text-align: center; font: 500 18px/1.35 "Fraunces", serif; min-height: 84px; display: flex; align-items: center; justify-content: center; margin: 8px 0 12px; }
+.ck-script { background: #4a3616; border-radius: 16px; padding: 14px 16px; font-size: 15.5px; margin: 8px 0 12px; }
+.ck-script b { color: var(--amber); }
+.ck-spacer { flex: 1; }
+.ck-acts { display: grid; gap: 10px; }
+.ck-wrong { background: none; border: none; color: var(--red); font: 600 14px "Inter", sans-serif; margin-top: 2px; cursor: pointer; text-decoration: underline; }
+.ck-done { text-align: center; margin-top: 40px; }
+.ck-done h2 { font-size: 30px; margin: 8px 0; }
+.ck-moon { font-size: 64px; }
+.ck-dim { color: var(--ink-dim); margin: 0; }
+.ck-tri { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 18px 0; }
+.ck-tri div { background: var(--bg-card); border-radius: 14px; padding: 12px 4px; font-size: 12px; color: var(--ink-dim); }
+.ck-tri b { display: block; font: 600 24px "Fraunces", serif; color: var(--ink); }
+.ck-list { padding-left: 20px; margin: 8px 0 14px; }
+.ck-list li { margin: 6px 0; }
+.ck-keep { margin-top: 8px; }
+
+/* ---------- bottom nav (4 tabs) ---------- */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: flex;
   background: rgba(27,19,32,.94); backdrop-filter: blur(10px); border-top: 1px solid var(--line);

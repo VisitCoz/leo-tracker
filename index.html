@@ -100,6 +100,30 @@
       </div>
     </section>
 
+    <!-- ===== CHECKS: timed checks at night ===== -->
+    <section class="tab hidden" id="tab-checks">
+      <section class="card checks-tonight">
+        <p class="eyebrow">Tonight · timed checks</p>
+        <h2 class="checks-night" id="ck-night">Night 1 of 7</h2>
+        <p class="note flat">Visits get further apart. He is never alone longer than the gap.</p>
+        <div class="gaps" id="ck-gaps"></div>
+        <button class="btn big" id="ck-start"></button>
+        <div class="row2">
+          <button class="btn btn-ghost" id="ck-wake">He woke up</button>
+          <button class="btn btn-ghost" id="ck-morning">Up for the day</button>
+        </div>
+      </section>
+      <section class="card">
+        <p class="eyebrow">This week</p>
+        <div class="nights" id="ck-week"></div>
+        <p class="note">Minutes to fall asleep at bedtime · number of visits.</p>
+      </section>
+      <section class="card">
+        <p class="eyebrow">The clock, every day</p>
+        <p class="checks-clock">Up 6:00 · nap 9:30 · nap 2:45 · crib 7:30 PM</p>
+      </section>
+    </section>
+
     <!-- ===== GROWTH ===== -->
     <section class="tab hidden" id="tab-grow">
       <div class="stats">
@@ -130,6 +154,7 @@
 
     <nav class="nav">
       <button class="on" data-tab="tab-sleep"><span>🌙</span>Sleep</button>
+      <button data-tab="tab-checks"><span>⏱</span>Checks</button>
       <button data-tab="tab-grow"><span>📈</span>Growth</button>
       <button data-tab="tab-firsts"><span>✨</span>Firsts</button>
     </nav>
@@ -139,6 +164,12 @@
       <div class="r1"><span id="undo-msg"></span><button class="link-btn" id="undo">Undo</button></div>
       <div class="r2" id="late"><button data-min="5">5 min ago</button><button data-min="10">10</button><button data-min="15">15</button><button data-min="other" id="late-other">other</button></div>
       <div class="bar" id="undo-line"></div>
+    </div>
+
+    <!-- the timed-checks clock: full screen while it runs -->
+    <div class="ck-timer hidden" id="ck-timer">
+      <button class="ck-back" id="ck-back">‹ Back</button>
+      <div class="ck-body" id="ck-body"></div>
     </div>
   </main>
 
@@ -162,6 +193,13 @@
     <h3 id="short-h"></h3>
     <p id="short-p"></p>
     <div class="row"><button class="btn btn-primary" id="short-resettle">Resettling</button><button class="btn btn-ghost" id="short-over">Nap over</button></div>
+  </div></div>
+
+  <div class="backdrop" id="bd-wrong"><div class="sheet">
+    <h3>Go in and pick him up if</h3>
+    <ul class="ck-list"><li>he vomits or has a fever</li><li>he pulls at an ear</li><li>a sharp cry that sounds like pain</li><li>an arm or leg is stuck</li><li>it feels wrong, not just loud</li></ul>
+    <button class="btn btn-primary" id="ck-stop">Going in · stop for tonight</button>
+    <button class="btn btn-ghost ck-keep" data-close>It's only loud · keep going</button>
   </div></div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
